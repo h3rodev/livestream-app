@@ -1,0 +1,18 @@
+{
+  "name": "livestream-signaling-server",
+  "version": "0.1.0",
+  "description": "Simple WebRTC signaling server for livestream app (Phase 1)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

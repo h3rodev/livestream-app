@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Livestream Admin - Phase 1</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #111;
+      color: #eee;
+      margin: 0;
+      padding: 16px;
+    }
+    h1 {
+      margin-top: 0;
+    }
+    #status {
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    #camera-list {
+      margin: 8px 0 16px;
+      font-size: 14px;
+    }
+    video {
+      width: 100%;
+      max-width: 720px;
+      background: #000;
+      border-radius: 8px;
+      min-height: 240px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>Livestream Admin (Phase 1)</h1>
+  <div id="status">Connecting to signalling server…</div>
+  <div id="camera-list"></div>
+
+  <!-- Manual-play: ONLY controls, no autoplay, no muted, no playsinline -->
+  <video id="remoteVideo" controls></video>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const statusEl = document.getElementById("status");
+    const cameraListEl = document.getElementById("camera-list");
+    const remoteVideo = document.getElementById("remoteVideo");
+
+    let peerConnections = {}; // cameraId -> RTCPeerConnection
+    let lastStream = null;
+
+    function logStatus(msg) {
+      console.log(msg);
+      statusEl.textContent = msg;
+    }
+
+    // Debug: check if frames are arriving
+    setInterval(() => {
+      if (remoteVideo.videoWidth && remoteVideo.videoHeight) {
+        console.log(
+          `[ADMIN] Video size: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight}, readyState=${remoteVideo.readyState}`
+        );
+      }
+    }, 1000);
+
+    socket.on("connect", () => {
+      logStatus("Connected. Joining as admin…");
+      socket.emit("join", { role: "admin" });
+    });
+
+    socket.on("camera-joined", ({ cameraId }) => {
+      console.log("[ADMIN] Camera joined:", cameraId);
+      cameraListEl.textContent = `Available camera: ${cameraId}`;
+    });
+
+    socket.on("camera-left", ({ cameraId }) => {
+      console.log("[ADMIN] Camera left:", cameraId);
+      cameraListEl.textContent = "Camera disconnected";
+      if (peerConnections[cameraId]) {
+        peerConnections[cameraId].close();
+        delete peerConnections[cameraId];
+      }
+      remoteVideo.srcObject = null;
+      lastStream = null;
+      logStatus("Camera disconnected.");
+    });
+
+    // Camera sends offer; admin creates answer
+    socket.on("webrtc-offer", async ({ fromCameraId, sdp }) => {
+      logStatus(`Received offer from camera ${fromCameraId}`);
+      console.log("[ADMIN] webrtc-offer from", fromCameraId, sdp);
+
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" }
+        ]
+      });
+
+      peerConnections[fromCameraId] = pc;
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log("[ADMIN] Sending ICE to camera", fromCameraId);
+          socket.emit("webrtc-ice-candidate", {
+            targetId: fromCameraId,
+            candidate: event.candidate
+          });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log("[ADMIN] PC state:", pc.connectionState);
+        if (pc.connectionState === "connected") {
+          logStatus(`Connected to camera ${fromCameraId}`);
+        }
+      };
+
+      pc.ontrack = (event) => {
+        console.log("[ADMIN] Remote track received", event.streams);
+        const [stream] = event.streams;
+        if (!stream) return;
+
+        lastStream = stream;
+
+        // Attach the stream ONCE. No play() here at all.
+        if (remoteVideo.srcObject !== stream) {
+          console.log("[ADMIN] Attaching stream to video element (manual play)");
+          remoteVideo.srcObject = stream;
+          logStatus("Stream attached. Click the Play button on the video.");
+        } else {
+          console.log("[ADMIN] Stream already attached, ignoring duplicate ontrack");
+        }
+      };
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        socket.emit("webrtc-answer", {
+          toCameraId: fromCameraId,
+          sdp: pc.localDescription
+        });
+
+        console.log("[ADMIN] Sent answer to camera", fromCameraId);
+        logStatus(`Sent answer to camera ${fromCameraId}`);
+      } catch (err) {
+        console.error("[ADMIN] Error handling offer on admin:", err);
+        logStatus("Error handling offer. Check console.");
+      }
+    });
+
+    // ICE from camera
+    socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
+      const pc = peerConnections[fromId];
+      if (!pc) {
+        console.warn("[ADMIN] No peerConnection for ICE candidate from", fromId);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log("[ADMIN] Added ICE candidate from", fromId);
+      } catch (err) {
+        console.error("[ADMIN] Error adding ICE candidate", err);
+      }
+    });
+  </script>
+</body>
+</html>

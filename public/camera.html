@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Livestream Camera - Phase 1</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #000;
+      color: #eee;
+      margin: 0;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 18px;
+      margin-top: 0;
+    }
+    video {
+      width: 100%;
+      background: #000;
+      border-radius: 8px;
+    }
+    #status {
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 16px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    #startBtn {
+      background: #16a34a;
+      color: #fff;
+    }
+    #stopBtn {
+      background: #ef4444;
+      color: #fff;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Camera (Phase 1)</h1>
+  <div id="status">Connecting…</div>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <button id="startBtn">Start Streaming</button>
+  <button id="stopBtn">Stop Streaming</button>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const statusEl = document.getElementById("status");
+    const localVideo = document.getElementById("localVideo");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+
+    let pc = null;
+    let localStream = null;
+    let currentAdminId = null; // For now we’ll handle first admin that responds.
+
+    function logStatus(msg) {
+      console.log(msg);
+      statusEl.textContent = msg;
+    }
+
+    socket.on("connect", () => {
+      logStatus("Connected. Joining as camera…");
+      socket.emit("join", { role: "camera" });
+    });
+
+    socket.on("disconnect", () => {
+      logStatus("Disconnected from signalling server");
+    });
+
+    // Admin may send ICE candidates
+    socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
+      if (!pc) return;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error("Error adding ICE candidate on camera", err);
+      }
+    });
+
+    // Admin sends answer to our offer
+    socket.on("webrtc-answer", async ({ fromAdminId, sdp }) => {
+      currentAdminId = fromAdminId;
+      logStatus(`Received answer from admin ${fromAdminId}`);
+      if (!pc) {
+        console.warn("No RTCPeerConnection when answer received");
+        return;
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    });
+
+    async function startStreaming() {
+      if (pc) {
+        logStatus("Already streaming");
+        return;
+      }
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: true
+        });
+
+        localVideo.srcObject = localStream;
+
+        pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" }
+          ]
+        });
+
+        // Send ICE to admins (broadcast via server)
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("webrtc-ice-candidate", {
+              targetId: null, // server will broadcast to admins
+              candidate: event.candidate
+            });
+          }
+        };
+
+        // Add local tracks
+        localStream.getTracks().forEach((track) => {
+          pc.addTrack(track, localStream);
+        });
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        socket.emit("webrtc-offer", {
+          toAdminId: null, // broadcast to all admins for now
+          sdp: pc.localDescription
+        });
+
+        logStatus("Streaming started. Waiting for admin answer…");
+        startBtn.style.display = "none";
+        stopBtn.style.display = "inline-block";
+
+      } catch (err) {
+        console.error(err);
+        logStatus("Error accessing camera/mic. Check permissions.");
+      }
+    }
+
+    function stopStreaming() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach((t) => t.stop());
+        localStream = null;
+      }
+      localVideo.srcObject = null;
+      logStatus("Streaming stopped");
+      startBtn.style.display = "inline-block";
+      stopBtn.style.display = "none";
+    }
+
+    startBtn.addEventListener("click", startStreaming);
+    stopBtn.addEventListener("click", stopStreaming);
+  </script>
+</body>
+</html>

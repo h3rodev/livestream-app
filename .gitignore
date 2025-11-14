@@ -1,0 +1,14 @@
+# Node
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Build
+dist/
+build/
+
+# Local environment
+.env
+
+# SSL certificates
+server/certs/
