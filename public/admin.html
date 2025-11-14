@@ -2,125 +2,358 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Livestream Admin – Multi-Camera (Manual Play)</title>
+  <title>Livestream Admin – Preview / Live</title>
   <style>
-    :root {
-      color-scheme: dark;
-    }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #0b0b0f;
-      color: #e5e7eb;
       margin: 0;
-      padding: 16px;
+      padding: 12px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #070b10;
+      color: #e5e7eb;
     }
-    h1 {
-      margin: 0 0 4px;
-      font-size: 20px;
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
       font-weight: 600;
     }
-    #subheader {
-      font-size: 13px;
-      color: #9ca3af;
-      margin-bottom: 12px;
-    }
     #status {
-      margin-bottom: 8px;
-      font-size: 13px;
-      color: #e5e7eb;
-    }
-    #camera-summary {
-      font-size: 13px;
-      margin-bottom: 16px;
+      font-size: 12px;
       color: #9ca3af;
     }
-    #camera-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 12px;
+
+    #camera-summary {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-bottom: 8px;
     }
-    .camera-card {
-      background: #111827;
-      border-radius: 10px;
-      padding: 10px;
+
+    /* Main layout: 2 columns (Preview | Live) + bottom strip */
+    #layout {
+      display: grid;
+      grid-template-rows: minmax(260px, 1fr) auto;
+      grid-template-columns: 1.1fr 1.9fr;
+      gap: 4px;
+      height: calc(100vh - 80px);
+    }
+
+    #preview-pane,
+    #live-pane {
+      background: #0b1120;
       border: 1px solid #1f2937;
+      border-radius: 6px;
+      padding: 6px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 4px;
     }
-    .camera-header {
+
+    .pane-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-size: 12px;
-      color: #d1d5db;
-    }
-    .camera-id {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-        "Liberation Mono", "Courier New", monospace;
-      font-size: 11px;
       color: #9ca3af;
-      word-break: break-all;
-      max-width: 70%;
     }
-    .camera-status {
+
+    .pane-title {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
       font-size: 11px;
-      padding: 1px 8px;
-      border-radius: 999px;
-      border: 1px solid transparent;
     }
-    .status-connecting {
-      color: #f97316;
-      border-color: #f97316;
-      background: rgba(249, 115, 22, 0.1);
-    }
-    .status-live {
-      color: #22c55e;
-      border-color: #22c55e;
-      background: rgba(34, 197, 94, 0.1);
-    }
-    .status-offline {
-      color: #9ca3af;
-      border-color: #4b5563;
-      background: rgba(75, 85, 99, 0.2);
-    }
-    video {
-      width: 100%;
-      border-radius: 8px;
-      background: #000;
-      min-height: 140px;
-      display: block;
-    }
-    .camera-footer {
+
+    .pane-meta {
       font-size: 11px;
       color: #6b7280;
+    }
+
+    .pane-video-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #020617;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    #take-bar {
+      grid-column: 1 / span 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 4px 0;
+    }
+
+    #take-button {
+      padding: 6px 16px;
+      border-radius: 999px;
+      border: 1px solid #f97316;
+      background: #0f172a;
+      color: #f97316;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      cursor: pointer;
+    }
+    #take-button:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    /* Bottom strip: audio + camera thumbnails */
+    #bottom-strip {
+      grid-column: 1 / span 2;
+      display: grid;
+      grid-template-columns: 0.9fr repeat(5, 1fr);
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    #audio-panel,
+    .camera-slot {
+      background: #020617;
+      border: 1px solid #1f2937;
+      border-radius: 6px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    #audio-panel-header,
+    .camera-slot-header {
+      font-size: 11px;
+      color: #9ca3af;
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
-    .metric {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-        "Liberation Mono", "Courier New", monospace;
+
+    #audio-panel-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: #4b5563;
+    }
+
+    .camera-label {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .camera-status {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+    }
+    .status-offline {
+      border-color: #4b5563;
+      color: #9ca3af;
+      background: rgba(75,85,99,0.3);
+    }
+    .status-connecting {
+      border-color: #f97316;
+      color: #f97316;
+      background: rgba(249,115,22,0.12);
+    }
+    .status-live {
+      border-color: #22c55e;
+      color: #22c55e;
+      background: rgba(34,197,94,0.18);
+    }
+    .status-previewing {
+      border-color: #38bdf8;
+      color: #38bdf8;
+      background: rgba(56,189,248,0.18);
+    }
+
+    .camera-thumb-wrapper {
+      flex: 1;
+      position: relative;
+      background: #020617;
+      border-radius: 4px;
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    .camera-thumb-wrapper video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .camera-thumb-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border: 1px solid transparent;
+    }
+    .camera-thumb-wrapper.active-preview .camera-thumb-overlay {
+      border-color: #38bdf8;
+    }
+    .camera-thumb-wrapper.active-live .camera-thumb-overlay {
+      border-color: #22c55e;
+    }
+
+    .camera-id-text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 10px;
+      color: #6b7280;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 2px;
     }
   </style>
 </head>
 <body>
-  <h1>Livestream Admin</h1>
-  <div id="subheader">Multi-camera WebRTC viewer (manual Play per camera)</div>
-  <div id="status">Connecting to signalling server…</div>
+  <header>
+    <h1>Livestream Admin</h1>
+    <div id="status">Connecting…</div>
+  </header>
   <div id="camera-summary">No cameras connected.</div>
 
-  <div id="camera-grid"></div>
+  <div id="layout">
+    <!-- Preview pane -->
+    <div id="preview-pane">
+      <div class="pane-header">
+        <div class="pane-title">Preview</div>
+        <div class="pane-meta" id="preview-meta">None selected</div>
+      </div>
+      <div class="pane-video-wrapper">
+        <video id="previewVideo" controls playsinline webkit-playsinline></video>
+      </div>
+    </div>
+
+    <!-- Live pane -->
+    <div id="live-pane">
+      <div class="pane-header">
+        <div class="pane-title">Live</div>
+        <div class="pane-meta" id="live-meta">None on air</div>
+      </div>
+      <div class="pane-video-wrapper">
+        <video id="liveVideo" controls playsinline webkit-playsinline></video>
+      </div>
+    </div>
+
+    <!-- TAKE button bar -->
+    <div id="take-bar">
+      <button id="take-button" disabled>TAKE PREVIEW TO LIVE</button>
+    </div>
+
+    <!-- Bottom strip: audio + 5 camera slots -->
+    <div id="bottom-strip">
+      <div id="audio-panel">
+        <div id="audio-panel-header">
+          <span class="camera-label">Audio</span>
+          <span style="font-size:10px;color:#4b5563;">(coming soon)</span>
+        </div>
+        <div id="audio-panel-body">
+          Audio meters & routing here
+        </div>
+      </div>
+
+      <!-- Camera slots V1–V5 -->
+      <div class="camera-slot" data-slot-index="0">
+        <div class="camera-slot-header">
+          <span class="camera-label">V1</span>
+          <span class="camera-status status-offline">offline</span>
+        </div>
+        <div class="camera-thumb-wrapper">
+          <video muted playsinline webkit-playsinline></video>
+          <div class="camera-thumb-overlay"></div>
+        </div>
+        <div class="camera-id-text"></div>
+      </div>
+
+      <div class="camera-slot" data-slot-index="1">
+        <div class="camera-slot-header">
+          <span class="camera-label">V2</span>
+          <span class="camera-status status-offline">offline</span>
+        </div>
+        <div class="camera-thumb-wrapper">
+          <video muted playsinline webkit-playsinline></video>
+          <div class="camera-thumb-overlay"></div>
+        </div>
+        <div class="camera-id-text"></div>
+      </div>
+
+      <div class="camera-slot" data-slot-index="2">
+        <div class="camera-slot-header">
+          <span class="camera-label">V3</span>
+          <span class="camera-status status-offline">offline</span>
+        </div>
+        <div class="camera-thumb-wrapper">
+          <video muted playsinline webkit-playsinline></video>
+          <div class="camera-thumb-overlay"></div>
+        </div>
+        <div class="camera-id-text"></div>
+      </div>
+
+      <div class="camera-slot" data-slot-index="3">
+        <div class="camera-slot-header">
+          <span class="camera-label">V4</span>
+          <span class="camera-status status-offline">offline</span>
+        </div>
+        <div class="camera-thumb-wrapper">
+          <video muted playsinline webkit-playsinline></video>
+          <div class="camera-thumb-overlay"></div>
+        </div>
+        <div class="camera-id-text"></div>
+      </div>
+
+      <div class="camera-slot" data-slot-index="4">
+        <div class="camera-slot-header">
+          <span class="camera-label">V5</span>
+          <span class="camera-status status-offline">offline</span>
+        </div>
+        <div class="camera-thumb-wrapper">
+          <video muted playsinline webkit-playsinline></video>
+          <div class="camera-thumb-overlay"></div>
+        </div>
+        <div class="camera-id-text"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     const statusEl = document.getElementById("status");
     const cameraSummaryEl = document.getElementById("camera-summary");
-    const cameraGridEl = document.getElementById("camera-grid");
+    const previewVideo = document.getElementById("previewVideo");
+    const liveVideo = document.getElementById("liveVideo");
+    const previewMeta = document.getElementById("preview-meta");
+    const liveMeta = document.getElementById("live-meta");
+    const takeButton = document.getElementById("take-button");
+    const cameraSlots = Array.from(document.querySelectorAll(".camera-slot"));
 
-    // cameraId -> { pc, cardEl, videoEl, statusEl, footerStateEl, footerMetricsEl, lastState }
+    // cameraId -> { pc, stream, slotIndex }
     const cameras = new Map();
+    let cameraOrder = [];        // ordered list of cameraIds assigned to slots
+    let currentPreviewId = null;
+    let currentLiveId = null;
 
     function logStatus(msg) {
       console.log(msg);
@@ -129,119 +362,101 @@
 
     function updateCameraSummary() {
       const total = cameras.size;
-      const live = Array.from(cameras.values()).filter(
-        (c) => c.lastState === "live"
-      ).length;
-
-      if (total === 0) {
-        cameraSummaryEl.textContent = "No cameras connected.";
-      } else {
-        cameraSummaryEl.textContent = `Cameras connected: ${total} • Live: ${live}`;
-      }
+      const liveCount = cameras.size; // for now, all connected are "live feeds"
+      cameraSummaryEl.textContent =
+        total === 0 ? "No cameras connected." : `Cameras connected: ${total}`;
     }
 
-    function createOrGetCameraCard(cameraId) {
-      if (cameras.has(cameraId)) return cameras.get(cameraId);
+    function assignSlotForCamera(cameraId) {
+      if (cameraOrder.includes(cameraId)) {
+        return cameraOrder.indexOf(cameraId);
+      }
+      // find first free slot
+      for (let i = 0; i < cameraSlots.length; i++) {
+        const occupied = cameraOrder[i];
+        if (!occupied) {
+          cameraOrder[i] = cameraId;
+          return i;
+        }
+      }
+      // if full, append (will overflow, but we keep mapping)
+      cameraOrder.push(cameraId);
+      return cameraOrder.length - 1;
+    }
 
-      const card = document.createElement("div");
-      card.className = "camera-card";
-      card.dataset.cameraId = cameraId;
-
-      const header = document.createElement("div");
-      header.className = "camera-header";
-
-      const idLabel = document.createElement("div");
-      idLabel.className = "camera-id";
-      idLabel.textContent = cameraId;
-
-      const statusBadge = document.createElement("div");
-      statusBadge.className = "camera-status status-connecting";
-      statusBadge.textContent = "connecting";
-
-      header.appendChild(idLabel);
-      header.appendChild(statusBadge);
-
-      const video = document.createElement("video");
-      // MANUAL PLAY:
-      // - no autoplay
-      // - no programmatic play()
-      video.muted = false;
-      video.playsInline = true;
-      video.setAttribute("webkit-playsinline", "true");
-      video.controls = true;
-
-      const footer = document.createElement("div");
-      footer.className = "camera-footer";
-      const stateLabel = document.createElement("span");
-      stateLabel.textContent = "Waiting for stream…";
-      const metricsLabel = document.createElement("span");
-      metricsLabel.className = "metric";
-      metricsLabel.textContent = "";
-
-      footer.appendChild(stateLabel);
-      footer.appendChild(metricsLabel);
-
-      card.appendChild(header);
-      card.appendChild(video);
-      card.appendChild(footer);
-
-      cameraGridEl.appendChild(card);
-
-      const info = {
-        pc: null,
-        cardEl: card,
-        videoEl: video,
-        statusEl: statusBadge,
-        footerStateEl: stateLabel,
-        footerMetricsEl: metricsLabel,
-        lastState: "connecting",
+    function getSlotElements(slotIndex) {
+      const slot = cameraSlots[slotIndex];
+      if (!slot) return null;
+      return {
+        slot,
+        statusEl: slot.querySelector(".camera-status"),
+        thumbWrapper: slot.querySelector(".camera-thumb-wrapper"),
+        thumbVideo: slot.querySelector("video"),
+        overlay: slot.querySelector(".camera-thumb-overlay"),
+        idText: slot.querySelector(".camera-id-text"),
       };
-      cameras.set(cameraId, info);
-      updateCameraSummary();
-      return info;
     }
 
-    function setCameraState(cameraId, state, extraText) {
-      const info = cameras.get(cameraId);
-      if (!info) return;
-
-      info.lastState = state;
-
-      info.statusEl.classList.remove(
-        "status-connecting",
-        "status-live",
-        "status-offline"
-      );
-      if (state === "connecting") {
-        info.statusEl.classList.add("status-connecting");
-        info.statusEl.textContent = "connecting";
-        info.footerStateEl.textContent = extraText || "Connecting…";
-      } else if (state === "live") {
-        info.statusEl.classList.add("status-live");
-        info.statusEl.textContent = "live";
-        info.footerStateEl.textContent =
-          extraText || "Stream ready. Click Play on the video.";
-      } else if (state === "offline") {
-        info.statusEl.classList.add("status-offline");
-        info.statusEl.textContent = "offline";
-        info.footerStateEl.textContent =
-          extraText || "Camera disconnected.";
-      }
-
-      updateCameraSummary();
+    function setSlotState(slotIndex, stateText, className) {
+      const els = getSlotElements(slotIndex);
+      if (!els) return;
+      els.statusEl.textContent = stateText;
+      els.statusEl.classList.remove("status-offline", "status-connecting", "status-live", "status-previewing");
+      els.statusEl.classList.add(className);
     }
 
-    // Debug: per-camera video size/readyState
-    setInterval(() => {
-      cameras.forEach((info, cameraId) => {
-        const v = info.videoEl;
-        if (v.videoWidth && v.videoHeight) {
-          info.footerMetricsEl.textContent = `${v.videoWidth}×${v.videoHeight} • readyState=${v.readyState}`;
+    function markActivePreviewLive() {
+      cameraSlots.forEach((slot, idx) => {
+        const els = getSlotElements(idx);
+        if (!els) return;
+        els.thumbWrapper.classList.remove("active-preview", "active-live");
+        const camId = cameraOrder[idx];
+        if (!camId) return;
+        if (camId === currentPreviewId) {
+          els.thumbWrapper.classList.add("active-preview");
+        }
+        if (camId === currentLiveId) {
+          els.thumbWrapper.classList.add("active-live");
         }
       });
-    }, 1500);
+    }
 
-    // Socket events
+    function setPreviewCamera(cameraId) {
+      const info = cameras.get(cameraId);
+      if (!info || !info.stream) return;
+
+      currentPreviewId = cameraId;
+      previewVideo.srcObject = info.stream;
+      previewMeta.textContent = `Previewing ${cameraId}`;
+      takeButton.disabled = false;
+      markActivePreviewLive();
+    }
+
+    function setLiveFromPreview() {
+      if (!currentPreviewId) return;
+      const info = cameras.get(currentPreviewId);
+      if (!info || !info.stream) return;
+
+      currentLiveId = currentPreviewId;
+      liveVideo.srcObject = info.stream;
+      liveMeta.textContent = `On Air: ${currentLiveId}`;
+      markActivePreviewLive();
+    }
+
+    takeButton.addEventListener("click", setLiveFromPreview);
+
+    // Clicking a thumb sets Preview
+    cameraSlots.forEach((slot, idx) => {
+      const els = getSlotElements(idx);
+      els.thumbWrapper.addEventListener("click", () => {
+        const camId = cameraOrder[idx];
+        if (camId) {
+          setPreviewCamera(camId);
+        }
+      });
+    });
+
+    // Socket.io events
     socket.on("connect", () => {
       logStatus("Connected. Joining as admin…");
       socket.emit("join", { role: "admin" });
@@ -249,10 +464,18 @@
 
     socket.on("camera-joined", ({ cameraId }) => {
       console.log("[ADMIN] Camera joined:", cameraId);
-      const info = createOrGetCameraCard(cameraId);
-      if (info.lastState === "offline") {
-        setCameraState(cameraId, "connecting", "Reconnecting…");
+      let info = cameras.get(cameraId);
+      if (!info) {
+        const slotIndex = assignSlotForCamera(cameraId);
+        const els = getSlotElements(slotIndex);
+        if (els) {
+          els.idText.textContent = cameraId;
+          setSlotState(slotIndex, "connecting", "status-connecting");
+        }
+        info = { pc: null, stream: null, slotIndex };
+        cameras.set(cameraId, info);
       }
+      updateCameraSummary();
     });
 
     socket.on("camera-left", ({ cameraId }) => {
@@ -260,47 +483,57 @@
       const info = cameras.get(cameraId);
       if (info) {
         if (info.pc) {
-          try {
-            info.pc.close();
-          } catch (e) {}
-          info.pc = null;
+          try { info.pc.close(); } catch (e) {}
         }
-        if (info.videoEl.srcObject) {
-          info.videoEl.srcObject.getTracks().forEach((t) => t.stop());
-          info.videoEl.srcObject = null;
+        const els = getSlotElements(info.slotIndex);
+        if (els) {
+          if (els.thumbVideo.srcObject) {
+            els.thumbVideo.srcObject.getTracks().forEach(t => t.stop());
+            els.thumbVideo.srcObject = null;
+          }
+          setSlotState(info.slotIndex, "offline", "status-offline");
         }
-        setCameraState(cameraId, "offline");
+        if (currentPreviewId === cameraId) {
+          currentPreviewId = null;
+          previewVideo.srcObject = null;
+          previewMeta.textContent = "None selected";
+          takeButton.disabled = true;
+        }
+        if (currentLiveId === cameraId) {
+          currentLiveId = null;
+          liveVideo.srcObject = null;
+          liveMeta.textContent = "None on air";
+        }
+        cameras.delete(cameraId);
+        updateCameraSummary();
       }
     });
 
-    // Handle WebRTC offer from camera
+    // Handle WebRTC offer
     socket.on("webrtc-offer", async ({ fromCameraId, sdp }) => {
       logStatus(`Received offer from camera ${fromCameraId}`);
       console.log("[ADMIN] webrtc-offer from", fromCameraId, sdp);
 
-      const info = createOrGetCameraCard(fromCameraId);
+      let info = cameras.get(fromCameraId);
+      if (!info) {
+        const slotIndex = assignSlotForCamera(fromCameraId);
+        info = { pc: null, stream: null, slotIndex };
+        cameras.set(fromCameraId, info);
+      }
 
       if (info.pc) {
-        try {
-          info.pc.close();
-        } catch (e) {
-          console.warn("[ADMIN] Error closing old PC for", fromCameraId, e);
-        }
+        try { info.pc.close(); } catch (e) {}
       }
 
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
       info.pc = pc;
-      setCameraState(
-        fromCameraId,
-        "connecting",
-        "Negotiating WebRTC (offer/answer)…"
-      );
+      const els = getSlotElements(info.slotIndex);
+      if (els) setSlotState(info.slotIndex, "connecting", "status-connecting");
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log("[ADMIN] Sending ICE to camera", fromCameraId);
           socket.emit("webrtc-ice-candidate", {
             targetId: fromCameraId,
             candidate: event.candidate,
@@ -308,60 +541,40 @@
         }
       };
 
-      pc.oniceconnectionstatechange = () => {
-        console.log(
-          "[ADMIN] ICE state for",
-          fromCameraId,
-          "=",
-          pc.iceConnectionState
-        );
-      };
-
       pc.onconnectionstatechange = () => {
-        console.log(
-          "[ADMIN] PC state for",
-          fromCameraId,
-          "=",
-          pc.connectionState
-        );
+        console.log("[ADMIN] PC state for", fromCameraId, "=", pc.connectionState);
         if (pc.connectionState === "connected") {
-          setCameraState(
-            fromCameraId,
-            "live",
-            "Connected. Stream ready — click Play."
-          );
+          if (els) setSlotState(info.slotIndex, "live", "status-live");
           logStatus("Connected to one or more cameras.");
-        } else if (
-          pc.connectionState === "disconnected" ||
-          pc.connectionState === "failed"
-        ) {
-          setCameraState(fromCameraId, "offline", "Connection lost.");
+        } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+          if (els) setSlotState(info.slotIndex, "offline", "status-offline");
         }
       };
 
-      // Attach stream when tracks arrive
       pc.ontrack = (event) => {
-        console.log(
-          "[ADMIN] Remote track received from",
-          fromCameraId,
-          event.streams
-        );
-        const [stream] = event.streams;
-        if (!stream) return;
+        console.log("[ADMIN] Remote track from", fromCameraId, event.streams, event.track);
+        let stream = event.streams && event.streams[0];
+        if (!stream) {
+          if (info.stream instanceof MediaStream) {
+            stream = info.stream;
+          } else {
+            stream = new MediaStream();
+          }
+          stream.addTrack(event.track);
+        }
+        info.stream = stream;
 
-        if (info.videoEl.srcObject !== stream) {
-          info.videoEl.srcObject = stream;
-          setCameraState(
-            fromCameraId,
-            "live",
-            "Stream attached. Click Play on the video."
-          );
-        } else {
-          console.log(
-            "[ADMIN] Stream already attached for",
-            fromCameraId,
-            "- ignoring duplicate ontrack"
-          );
+        const els = getSlotElements(info.slotIndex);
+        if (els && els.thumbVideo.srcObject !== stream) {
+          els.thumbVideo.srcObject = stream;
+        }
+
+        // If nothing preview/live yet, auto-assign first camera
+        if (!currentPreviewId) {
+          setPreviewCamera(fromCameraId);
+        }
+        if (!currentLiveId) {
+          setLiveFromPreview();
         }
       };
 
@@ -369,44 +582,27 @@
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-
         socket.emit("webrtc-answer", {
           toCameraId: fromCameraId,
           sdp: pc.localDescription,
         });
-
-        console.log("[ADMIN] Sent answer to camera", fromCameraId);
         logStatus(`Sent answer to camera ${fromCameraId}`);
       } catch (err) {
         console.error("[ADMIN] Error handling offer for", fromCameraId, err);
-        setCameraState(
-          fromCameraId,
-          "offline",
-          "Error handling offer. Check console."
-        );
-        logStatus("Error handling offer. See console for details.");
+        if (els) setSlotState(info.slotIndex, "offline", "status-offline");
+        logStatus("Error handling offer. See console.");
       }
+
+      updateCameraSummary();
     });
 
-    // ICE from camera
     socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
       const info = cameras.get(fromId);
-      if (!info || !info.pc) {
-        console.warn(
-          "[ADMIN] No peerConnection for ICE candidate from",
-          fromId
-        );
-        return;
-      }
+      if (!info || !info.pc) return;
       try {
         await info.pc.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log("[ADMIN] Added ICE candidate from", fromId);
       } catch (err) {
-        console.error(
-          "[ADMIN] Error adding ICE candidate from",
-          fromId,
-          err
-        );
+        console.error("[ADMIN] Error adding ICE candidate from", fromId, err);
       }
     });
   </script>
