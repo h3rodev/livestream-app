@@ -2,68 +2,246 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Livestream Admin - Phase 1</title>
+  <title>Livestream Admin – Multi-Camera (Manual Play)</title>
   <style>
+    :root {
+      color-scheme: dark;
+    }
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #111;
-      color: #eee;
+      background: #0b0b0f;
+      color: #e5e7eb;
       margin: 0;
       padding: 16px;
     }
     h1 {
-      margin-top: 0;
+      margin: 0 0 4px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    #subheader {
+      font-size: 13px;
+      color: #9ca3af;
+      margin-bottom: 12px;
     }
     #status {
       margin-bottom: 8px;
-      font-size: 14px;
+      font-size: 13px;
+      color: #e5e7eb;
     }
-    #camera-list {
-      margin: 8px 0 16px;
-      font-size: 14px;
+    #camera-summary {
+      font-size: 13px;
+      margin-bottom: 16px;
+      color: #9ca3af;
+    }
+    #camera-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .camera-card {
+      background: #111827;
+      border-radius: 10px;
+      padding: 10px;
+      border: 1px solid #1f2937;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .camera-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: #d1d5db;
+    }
+    .camera-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
+      font-size: 11px;
+      color: #9ca3af;
+      word-break: break-all;
+      max-width: 70%;
+    }
+    .camera-status {
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+    }
+    .status-connecting {
+      color: #f97316;
+      border-color: #f97316;
+      background: rgba(249, 115, 22, 0.1);
+    }
+    .status-live {
+      color: #22c55e;
+      border-color: #22c55e;
+      background: rgba(34, 197, 94, 0.1);
+    }
+    .status-offline {
+      color: #9ca3af;
+      border-color: #4b5563;
+      background: rgba(75, 85, 99, 0.2);
     }
     video {
       width: 100%;
-      max-width: 720px;
-      background: #000;
       border-radius: 8px;
-      min-height: 240px;
+      background: #000;
+      min-height: 140px;
       display: block;
+    }
+    .camera-footer {
+      font-size: 11px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .metric {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Courier New", monospace;
     }
   </style>
 </head>
 <body>
-  <h1>Livestream Admin (Phase 1)</h1>
+  <h1>Livestream Admin</h1>
+  <div id="subheader">Multi-camera WebRTC viewer (manual Play per camera)</div>
   <div id="status">Connecting to signalling server…</div>
-  <div id="camera-list"></div>
+  <div id="camera-summary">No cameras connected.</div>
 
-  <!-- Manual-play: ONLY controls, no autoplay, no muted, no playsinline -->
-  <video id="remoteVideo" controls></video>
+  <div id="camera-grid"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     const statusEl = document.getElementById("status");
-    const cameraListEl = document.getElementById("camera-list");
-    const remoteVideo = document.getElementById("remoteVideo");
+    const cameraSummaryEl = document.getElementById("camera-summary");
+    const cameraGridEl = document.getElementById("camera-grid");
 
-    let peerConnections = {}; // cameraId -> RTCPeerConnection
-    let lastStream = null;
+    // cameraId -> { pc, cardEl, videoEl, statusEl, footerStateEl, footerMetricsEl, lastState }
+    const cameras = new Map();
 
     function logStatus(msg) {
       console.log(msg);
       statusEl.textContent = msg;
     }
 
-    // Debug: check if frames are arriving
-    setInterval(() => {
-      if (remoteVideo.videoWidth && remoteVideo.videoHeight) {
-        console.log(
-          `[ADMIN] Video size: ${remoteVideo.videoWidth}x${remoteVideo.videoHeight}, readyState=${remoteVideo.readyState}`
-        );
-      }
-    }, 1000);
+    function updateCameraSummary() {
+      const total = cameras.size;
+      const live = Array.from(cameras.values()).filter(
+        (c) => c.lastState === "live"
+      ).length;
 
+      if (total === 0) {
+        cameraSummaryEl.textContent = "No cameras connected.";
+      } else {
+        cameraSummaryEl.textContent = `Cameras connected: ${total} • Live: ${live}`;
+      }
+    }
+
+    function createOrGetCameraCard(cameraId) {
+      if (cameras.has(cameraId)) return cameras.get(cameraId);
+
+      const card = document.createElement("div");
+      card.className = "camera-card";
+      card.dataset.cameraId = cameraId;
+
+      const header = document.createElement("div");
+      header.className = "camera-header";
+
+      const idLabel = document.createElement("div");
+      idLabel.className = "camera-id";
+      idLabel.textContent = cameraId;
+
+      const statusBadge = document.createElement("div");
+      statusBadge.className = "camera-status status-connecting";
+      statusBadge.textContent = "connecting";
+
+      header.appendChild(idLabel);
+      header.appendChild(statusBadge);
+
+      const video = document.createElement("video");
+      // MANUAL PLAY:
+      // - no autoplay
+      // - no programmatic play()
+      video.muted = false;
+      video.playsInline = true;
+      video.setAttribute("webkit-playsinline", "true");
+      video.controls = true;
+
+      const footer = document.createElement("div");
+      footer.className = "camera-footer";
+      const stateLabel = document.createElement("span");
+      stateLabel.textContent = "Waiting for stream…";
+      const metricsLabel = document.createElement("span");
+      metricsLabel.className = "metric";
+      metricsLabel.textContent = "";
+
+      footer.appendChild(stateLabel);
+      footer.appendChild(metricsLabel);
+
+      card.appendChild(header);
+      card.appendChild(video);
+      card.appendChild(footer);
+
+      cameraGridEl.appendChild(card);
+
+      const info = {
+        pc: null,
+        cardEl: card,
+        videoEl: video,
+        statusEl: statusBadge,
+        footerStateEl: stateLabel,
+        footerMetricsEl: metricsLabel,
+        lastState: "connecting",
+      };
+      cameras.set(cameraId, info);
+      updateCameraSummary();
+      return info;
+    }
+
+    function setCameraState(cameraId, state, extraText) {
+      const info = cameras.get(cameraId);
+      if (!info) return;
+
+      info.lastState = state;
+
+      info.statusEl.classList.remove(
+        "status-connecting",
+        "status-live",
+        "status-offline"
+      );
+      if (state === "connecting") {
+        info.statusEl.classList.add("status-connecting");
+        info.statusEl.textContent = "connecting";
+        info.footerStateEl.textContent = extraText || "Connecting…";
+      } else if (state === "live") {
+        info.statusEl.classList.add("status-live");
+        info.statusEl.textContent = "live";
+        info.footerStateEl.textContent =
+          extraText || "Stream ready. Click Play on the video.";
+      } else if (state === "offline") {
+        info.statusEl.classList.add("status-offline");
+        info.statusEl.textContent = "offline";
+        info.footerStateEl.textContent =
+          extraText || "Camera disconnected.";
+      }
+
+      updateCameraSummary();
+    }
+
+    // Debug: per-camera video size/readyState
+    setInterval(() => {
+      cameras.forEach((info, cameraId) => {
+        const v = info.videoEl;
+        if (v.videoWidth && v.videoHeight) {
+          info.footerMetricsEl.textContent = `${v.videoWidth}×${v.videoHeight} • readyState=${v.readyState}`;
+        }
+      });
+    }, 1500);
+
+    // Socket events
     socket.on("connect", () => {
       logStatus("Connected. Joining as admin…");
       socket.emit("join", { role: "admin" });
@@ -71,65 +249,119 @@
 
     socket.on("camera-joined", ({ cameraId }) => {
       console.log("[ADMIN] Camera joined:", cameraId);
-      cameraListEl.textContent = `Available camera: ${cameraId}`;
+      const info = createOrGetCameraCard(cameraId);
+      if (info.lastState === "offline") {
+        setCameraState(cameraId, "connecting", "Reconnecting…");
+      }
     });
 
     socket.on("camera-left", ({ cameraId }) => {
       console.log("[ADMIN] Camera left:", cameraId);
-      cameraListEl.textContent = "Camera disconnected";
-      if (peerConnections[cameraId]) {
-        peerConnections[cameraId].close();
-        delete peerConnections[cameraId];
+      const info = cameras.get(cameraId);
+      if (info) {
+        if (info.pc) {
+          try {
+            info.pc.close();
+          } catch (e) {}
+          info.pc = null;
+        }
+        if (info.videoEl.srcObject) {
+          info.videoEl.srcObject.getTracks().forEach((t) => t.stop());
+          info.videoEl.srcObject = null;
+        }
+        setCameraState(cameraId, "offline");
       }
-      remoteVideo.srcObject = null;
-      lastStream = null;
-      logStatus("Camera disconnected.");
     });
 
-    // Camera sends offer; admin creates answer
+    // Handle WebRTC offer from camera
     socket.on("webrtc-offer", async ({ fromCameraId, sdp }) => {
       logStatus(`Received offer from camera ${fromCameraId}`);
       console.log("[ADMIN] webrtc-offer from", fromCameraId, sdp);
 
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" }
-        ]
-      });
+      const info = createOrGetCameraCard(fromCameraId);
 
-      peerConnections[fromCameraId] = pc;
+      if (info.pc) {
+        try {
+          info.pc.close();
+        } catch (e) {
+          console.warn("[ADMIN] Error closing old PC for", fromCameraId, e);
+        }
+      }
+
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      info.pc = pc;
+      setCameraState(
+        fromCameraId,
+        "connecting",
+        "Negotiating WebRTC (offer/answer)…"
+      );
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           console.log("[ADMIN] Sending ICE to camera", fromCameraId);
           socket.emit("webrtc-ice-candidate", {
             targetId: fromCameraId,
-            candidate: event.candidate
+            candidate: event.candidate,
           });
         }
       };
 
+      pc.oniceconnectionstatechange = () => {
+        console.log(
+          "[ADMIN] ICE state for",
+          fromCameraId,
+          "=",
+          pc.iceConnectionState
+        );
+      };
+
       pc.onconnectionstatechange = () => {
-        console.log("[ADMIN] PC state:", pc.connectionState);
+        console.log(
+          "[ADMIN] PC state for",
+          fromCameraId,
+          "=",
+          pc.connectionState
+        );
         if (pc.connectionState === "connected") {
-          logStatus(`Connected to camera ${fromCameraId}`);
+          setCameraState(
+            fromCameraId,
+            "live",
+            "Connected. Stream ready — click Play."
+          );
+          logStatus("Connected to one or more cameras.");
+        } else if (
+          pc.connectionState === "disconnected" ||
+          pc.connectionState === "failed"
+        ) {
+          setCameraState(fromCameraId, "offline", "Connection lost.");
         }
       };
 
+      // Attach stream when tracks arrive
       pc.ontrack = (event) => {
-        console.log("[ADMIN] Remote track received", event.streams);
+        console.log(
+          "[ADMIN] Remote track received from",
+          fromCameraId,
+          event.streams
+        );
         const [stream] = event.streams;
         if (!stream) return;
 
-        lastStream = stream;
-
-        // Attach the stream ONCE. No play() here at all.
-        if (remoteVideo.srcObject !== stream) {
-          console.log("[ADMIN] Attaching stream to video element (manual play)");
-          remoteVideo.srcObject = stream;
-          logStatus("Stream attached. Click the Play button on the video.");
+        if (info.videoEl.srcObject !== stream) {
+          info.videoEl.srcObject = stream;
+          setCameraState(
+            fromCameraId,
+            "live",
+            "Stream attached. Click Play on the video."
+          );
         } else {
-          console.log("[ADMIN] Stream already attached, ignoring duplicate ontrack");
+          console.log(
+            "[ADMIN] Stream already attached for",
+            fromCameraId,
+            "- ignoring duplicate ontrack"
+          );
         }
       };
 
@@ -140,29 +372,41 @@
 
         socket.emit("webrtc-answer", {
           toCameraId: fromCameraId,
-          sdp: pc.localDescription
+          sdp: pc.localDescription,
         });
 
         console.log("[ADMIN] Sent answer to camera", fromCameraId);
         logStatus(`Sent answer to camera ${fromCameraId}`);
       } catch (err) {
-        console.error("[ADMIN] Error handling offer on admin:", err);
-        logStatus("Error handling offer. Check console.");
+        console.error("[ADMIN] Error handling offer for", fromCameraId, err);
+        setCameraState(
+          fromCameraId,
+          "offline",
+          "Error handling offer. Check console."
+        );
+        logStatus("Error handling offer. See console for details.");
       }
     });
 
     // ICE from camera
     socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
-      const pc = peerConnections[fromId];
-      if (!pc) {
-        console.warn("[ADMIN] No peerConnection for ICE candidate from", fromId);
+      const info = cameras.get(fromId);
+      if (!info || !info.pc) {
+        console.warn(
+          "[ADMIN] No peerConnection for ICE candidate from",
+          fromId
+        );
         return;
       }
       try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        await info.pc.addIceCandidate(new RTCIceCandidate(candidate));
         console.log("[ADMIN] Added ICE candidate from", fromId);
       } catch (err) {
-        console.error("[ADMIN] Error adding ICE candidate", err);
+        console.error(
+          "[ADMIN] Error adding ICE candidate from",
+          fromId,
+          err
+        );
       }
     });
   </script>
