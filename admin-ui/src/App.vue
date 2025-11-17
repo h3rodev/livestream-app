@@ -19,6 +19,7 @@
             id="previewVideo"
             ref="previewVideo"
             controls
+            muted
             playsinline
             webkit-playsinline
           ></video>
@@ -36,6 +37,7 @@
             id="liveVideo"
             ref="liveVideo"
             controls
+            muted
             playsinline
             webkit-playsinline
           ></video>
@@ -55,13 +57,71 @@
 
       <!-- Bottom strip: audio + 5 camera slots -->
       <div id="bottom-strip">
+        <!-- AUDIO MIXER PANEL -->
         <div id="audio-panel">
           <div id="audio-panel-header">
-            <span class="camera-label">Audio</span>
-            <span style="font-size:10px;color:#4b5563;">(coming soon)</span>
+            <span class="camera-label">Audio Mixer</span>
+            <span style="font-size:10px;color:#4b5563;">
+              {{ audioStatusLabel }}
+            </span>
           </div>
+
           <div id="audio-panel-body">
-            Audio meters &amp; routing here
+            <div v-if="!audioReady" class="audio-disabled">
+              <button @click="enableAudioMixer">
+                Enable Mixer
+              </button>
+              <div class="audio-hint">
+                Required once per session so the browser allows audio.
+              </div>
+            </div>
+
+            <div v-else class="audio-mixer">
+              <div class="audio-master">
+                <div class="audio-row-label">
+                  Master
+                  <span class="audio-value">{{ Math.round(masterVolume * 100) }}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  v-model.number="masterVolumeSlider"
+                  @input="onMasterVolumeChange"
+                />
+              </div>
+
+              <div class="audio-sources">
+                <div
+                  v-if="audioSources.length === 0"
+                  class="audio-no-sources"
+                >
+                  No camera audio sources yet.
+                </div>
+
+                <div
+                  v-for="src in audioSources"
+                  :key="src.cameraId"
+                  class="audio-source-row"
+                >
+                  <div class="audio-row-label">
+                    {{ src.label }}
+                    <span class="audio-value">
+                      {{ Math.round((src.volume ?? 1) * 100) }}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    :value="(src.volume ?? 1) * 100"
+                    @input="onCameraVolumeInput(src.cameraId, $event)"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -124,16 +184,40 @@ export default {
         { label: 'V5', cameraId: null, statusText: 'offline', statusClass: 'status-offline' }
       ],
 
-      cameras: {},          // cameraId -> { pc, stream, slotIndex }
+      cameras: {},          // cameraId -> { pc, stream, slotIndex, audioVolume }
       currentPreviewId: null,
       currentLiveId: null,
       socket: null,
+
+      // Audio mixer
+      audioContext: null,
+      masterGain: null,
+      audioNodes: {},       // cameraId -> { sourceNode, gainNode }
+      audioReady: false,
+      masterVolume: 1.0,
+      masterVolumeSlider: 100,
     }
   },
 
   computed: {
     takeEnabled() {
       return !!this.currentPreviewId
+    },
+
+    audioSources() {
+      return Object.keys(this.cameras)
+        .filter(id => this.audioNodes[id])
+        .map(id => ({
+          cameraId: id,
+          label: `Cam ${id.slice(0, 4)}`,
+          volume: this.cameras[id]?.audioVolume ?? 1,
+        }))
+    },
+
+    audioStatusLabel() {
+      if (!this.audioReady) return 'disabled'
+      if (this.audioSources.length === 0) return 'no active audio'
+      return 'live'
     },
   },
 
@@ -204,6 +288,77 @@ export default {
       this.liveMeta = `On Air: ${this.currentLiveId}`
     },
 
+    // --- AUDIO MIXER LOGIC ---
+
+    enableAudioMixer() {
+      if (!this.audioContext) {
+        const AC = window.AudioContext || window.webkitAudioContext
+        this.audioContext = new AC()
+        this.masterGain = this.audioContext.createGain()
+        this.masterGain.gain.value = this.masterVolume
+        this.masterGain.connect(this.audioContext.destination)
+      } else if (this.audioContext.state === 'suspended') {
+        this.audioContext.resume()
+      }
+      this.audioReady = true
+    },
+
+    ensureCameraAudio(cameraId, stream) {
+      if (!this.audioReady || !this.audioContext || !this.masterGain) return
+      if (this.audioNodes[cameraId]) return
+
+      const audioTracks = stream.getAudioTracks()
+      if (!audioTracks || audioTracks.length === 0) return
+
+      const audioStream = new MediaStream(audioTracks)
+      const source = this.audioContext.createMediaStreamSource(audioStream)
+      const gainNode = this.audioContext.createGain()
+      gainNode.gain.value = this.cameras[cameraId]?.audioVolume ?? 1.0
+
+      source.connect(gainNode).connect(this.masterGain)
+
+      this.audioNodes[cameraId] = { sourceNode: source, gainNode }
+      if (!this.cameras[cameraId].audioVolume) {
+        this.cameras[cameraId].audioVolume = 1.0
+      }
+    },
+
+    teardownCameraAudio(cameraId) {
+      const node = this.audioNodes[cameraId]
+      if (!node) return
+
+      try {
+        node.sourceNode.disconnect()
+      } catch {}
+      try {
+        node.gainNode.disconnect()
+      } catch {}
+
+      delete this.audioNodes[cameraId]
+    },
+
+    onMasterVolumeChange() {
+      this.masterVolume = this.masterVolumeSlider / 100
+      if (this.masterGain) {
+        this.masterGain.gain.value = this.masterVolume
+      }
+    },
+
+    onCameraVolumeInput(cameraId, event) {
+      const value = Number(event.target.value)
+      const normalized = value / 100
+      const info = this.cameras[cameraId]
+      if (!info) return
+      info.audioVolume = normalized
+
+      const node = this.audioNodes[cameraId]
+      if (node && node.gainNode) {
+        node.gainNode.gain.value = normalized
+      }
+    },
+
+    // --- SOCKET / WEBRTC ---
+
     initSocket() {
       const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
       console.log('[ADMIN] Connecting to signaling:', signalingUrl)
@@ -222,7 +377,7 @@ export default {
         if (!this.cameras[cameraId]) {
           const slotIndex = this.assignSlotForCamera(cameraId)
           this.setSlotState(slotIndex, 'connecting', 'status-connecting')
-          this.cameras[cameraId] = { pc: null, stream: null, slotIndex }
+          this.cameras[cameraId] = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
         }
         this.updateCameraSummary()
       })
@@ -252,6 +407,7 @@ export default {
             this.liveMeta = 'None on air'
           }
 
+          this.teardownCameraAudio(cameraId)
           delete this.cameras[cameraId]
           this.updateCameraSummary()
         }
@@ -264,7 +420,7 @@ export default {
         let info = this.cameras[fromCameraId]
         if (!info) {
           const slotIndex = this.assignSlotForCamera(fromCameraId)
-          info = { pc: null, stream: null, slotIndex }
+          info = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
           this.cameras[fromCameraId] = info
         }
 
@@ -319,6 +475,9 @@ export default {
           if (thumbVideo && thumbVideo.srcObject !== stream) {
             thumbVideo.srcObject = stream
           }
+
+          // Attach audio into mixer if available
+          this.ensureCameraAudio(fromCameraId, stream)
 
           if (!this.currentPreviewId) {
             this.setPreviewCamera(fromCameraId)
@@ -395,6 +554,7 @@ header h1 {
   margin-bottom: 8px;
 }
 
+/* Main layout: 2 columns (Preview | Live) + bottom strip */
 #layout {
   display: grid;
   grid-template-rows: minmax(260px, 1fr) auto;
@@ -474,6 +634,7 @@ video {
   cursor: default;
 }
 
+/* Bottom strip: audio + camera thumbnails */
 #bottom-strip {
   grid-column: 1 / span 2;
   display: grid;
@@ -502,14 +663,84 @@ video {
   align-items: center;
 }
 
+/* AUDIO PANEL BODY */
 #audio-panel-body {
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
   font-size: 11px;
-  color: #4b5563;
 }
+
+.audio-disabled {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.audio-disabled button {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  background: #0f172a;
+  color: #22c55e;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.audio-hint {
+  color: #6b7280;
+  font-size: 10px;
+}
+
+.audio-mixer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audio-master {
+  border-bottom: 1px solid #1f2937;
+  padding-bottom: 6px;
+}
+
+.audio-row-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.audio-value {
+  color: #9ca3af;
+  font-size: 10px;
+}
+
+.audio-master input[type="range"],
+.audio-source-row input[type="range"] {
+  width: 100%;
+}
+
+.audio-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audio-source-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.audio-no-sources {
+  color: #4b5563;
+  font-size: 10px;
+}
+
+/* CAMERA SLOTS */
 
 .camera-label {
   font-size: 11px;
