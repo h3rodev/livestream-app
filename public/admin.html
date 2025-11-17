@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Livestream Admin – Preview / Live</title>
+  <title>Livestream Admin – Vue UI</title>
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -228,383 +228,368 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>Livestream Admin</h1>
-    <div id="status">Connecting…</div>
-  </header>
-  <div id="camera-summary">No cameras connected.</div>
+  <div id="app">
+    <header>
+      <h1>Livestream Admin</h1>
+      <div id="status">{{ status }}</div>
+    </header>
+    <div id="camera-summary">{{ cameraSummary }}</div>
 
-  <div id="layout">
-    <!-- Preview pane -->
-    <div id="preview-pane">
-      <div class="pane-header">
-        <div class="pane-title">Preview</div>
-        <div class="pane-meta" id="preview-meta">None selected</div>
-      </div>
-      <div class="pane-video-wrapper">
-        <video id="previewVideo" controls playsinline webkit-playsinline></video>
-      </div>
-    </div>
-
-    <!-- Live pane -->
-    <div id="live-pane">
-      <div class="pane-header">
-        <div class="pane-title">Live</div>
-        <div class="pane-meta" id="live-meta">None on air</div>
-      </div>
-      <div class="pane-video-wrapper">
-        <video id="liveVideo" controls playsinline webkit-playsinline></video>
-      </div>
-    </div>
-
-    <!-- TAKE button bar -->
-    <div id="take-bar">
-      <button id="take-button" disabled>TAKE PREVIEW TO LIVE</button>
-    </div>
-
-    <!-- Bottom strip: audio + 5 camera slots -->
-    <div id="bottom-strip">
-      <div id="audio-panel">
-        <div id="audio-panel-header">
-          <span class="camera-label">Audio</span>
-          <span style="font-size:10px;color:#4b5563;">(coming soon)</span>
+    <div id="layout">
+      <!-- Preview pane -->
+      <div id="preview-pane">
+        <div class="pane-header">
+          <div class="pane-title">Preview</div>
+          <div class="pane-meta">{{ previewMeta }}</div>
         </div>
-        <div id="audio-panel-body">
-          Audio meters & routing here
+        <div class="pane-video-wrapper">
+          <video
+            id="previewVideo"
+            ref="previewVideo"
+            controls
+            playsinline
+            webkit-playsinline
+          ></video>
         </div>
       </div>
 
-      <!-- Camera slots V1–V5 -->
-      <div class="camera-slot" data-slot-index="0">
-        <div class="camera-slot-header">
-          <span class="camera-label">V1</span>
-          <span class="camera-status status-offline">offline</span>
+      <!-- Live pane -->
+      <div id="live-pane">
+        <div class="pane-header">
+          <div class="pane-title">Live</div>
+          <div class="pane-meta">{{ liveMeta }}</div>
         </div>
-        <div class="camera-thumb-wrapper">
-          <video muted playsinline webkit-playsinline></video>
-          <div class="camera-thumb-overlay"></div>
+        <div class="pane-video-wrapper">
+          <video
+            id="liveVideo"
+            ref="liveVideo"
+            controls
+            playsinline
+            webkit-playsinline
+          ></video>
         </div>
-        <div class="camera-id-text"></div>
       </div>
 
-      <div class="camera-slot" data-slot-index="1">
-        <div class="camera-slot-header">
-          <span class="camera-label">V2</span>
-          <span class="camera-status status-offline">offline</span>
-        </div>
-        <div class="camera-thumb-wrapper">
-          <video muted playsinline webkit-playsinline></video>
-          <div class="camera-thumb-overlay"></div>
-        </div>
-        <div class="camera-id-text"></div>
+      <!-- TAKE button bar -->
+      <div id="take-bar">
+        <button
+          id="take-button"
+          :disabled="!takeEnabled"
+          @click="setLiveFromPreview"
+        >
+          TAKE PREVIEW TO LIVE
+        </button>
       </div>
 
-      <div class="camera-slot" data-slot-index="2">
-        <div class="camera-slot-header">
-          <span class="camera-label">V3</span>
-          <span class="camera-status status-offline">offline</span>
+      <!-- Bottom strip: audio + 5 camera slots -->
+      <div id="bottom-strip">
+        <div id="audio-panel">
+          <div id="audio-panel-header">
+            <span class="camera-label">Audio</span>
+            <span style="font-size:10px;color:#4b5563;">(coming soon)</span>
+          </div>
+          <div id="audio-panel-body">
+            Audio meters &amp; routing here
+          </div>
         </div>
-        <div class="camera-thumb-wrapper">
-          <video muted playsinline webkit-playsinline></video>
-          <div class="camera-thumb-overlay"></div>
-        </div>
-        <div class="camera-id-text"></div>
-      </div>
 
-      <div class="camera-slot" data-slot-index="3">
-        <div class="camera-slot-header">
-          <span class="camera-label">V4</span>
-          <span class="camera-status status-offline">offline</span>
+        <!-- Camera slots V1–V5 -->
+        <div
+          class="camera-slot"
+          v-for="(slot, index) in cameraSlots"
+          :key="index"
+        >
+          <div class="camera-slot-header">
+            <span class="camera-label">{{ slot.label }}</span>
+            <span
+              class="camera-status"
+              :class="slot.statusClass"
+            >{{ slot.statusText }}</span>
+          </div>
+          <div
+            class="camera-thumb-wrapper"
+            :class="{
+              'active-preview': slot.cameraId === currentPreviewId,
+              'active-live': slot.cameraId === currentLiveId
+            }"
+            @click="slot.cameraId && setPreviewCamera(slot.cameraId)"
+          >
+            <video
+              muted
+              playsinline
+              webkit-playsinline
+              :ref="'thumbVideo-' + index"
+            ></video>
+            <div class="camera-thumb-overlay"></div>
+          </div>
+          <div class="camera-id-text">
+            {{ slot.cameraId || '—' }}
+          </div>
         </div>
-        <div class="camera-thumb-wrapper">
-          <video muted playsinline webkit-playsinline></video>
-          <div class="camera-thumb-overlay"></div>
-        </div>
-        <div class="camera-id-text"></div>
-      </div>
-
-      <div class="camera-slot" data-slot-index="4">
-        <div class="camera-slot-header">
-          <span class="camera-label">V5</span>
-          <span class="camera-status status-offline">offline</span>
-        </div>
-        <div class="camera-thumb-wrapper">
-          <video muted playsinline webkit-playsinline></video>
-          <div class="camera-thumb-overlay"></div>
-        </div>
-        <div class="camera-id-text"></div>
       </div>
     </div>
   </div>
 
+  <!-- Socket.IO -->
   <script src="/socket.io/socket.io.js"></script>
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+
   <script>
-    const socket = io();
-    const statusEl = document.getElementById("status");
-    const cameraSummaryEl = document.getElementById("camera-summary");
-    const previewVideo = document.getElementById("previewVideo");
-    const liveVideo = document.getElementById("liveVideo");
-    const previewMeta = document.getElementById("preview-meta");
-    const liveMeta = document.getElementById("live-meta");
-    const takeButton = document.getElementById("take-button");
-    const cameraSlots = Array.from(document.querySelectorAll(".camera-slot"));
+    const { createApp } = Vue;
 
-    // cameraId -> { pc, stream, slotIndex }
-    const cameras = new Map();
-    let cameraOrder = [];        // ordered list of cameraIds assigned to slots
-    let currentPreviewId = null;
-    let currentLiveId = null;
+    createApp({
+      data() {
+        return {
+          status: "Connecting…",
+          cameraSummary: "No cameras connected.",
+          previewMeta: "None selected",
+          liveMeta: "None on air",
+          takeEnabled: false,
 
-    function logStatus(msg) {
-      console.log(msg);
-      statusEl.textContent = msg;
-    }
+          // V1–V5 slots
+          cameraSlots: [
+            { label: "V1", cameraId: null, statusText: "offline", statusClass: "status-offline" },
+            { label: "V2", cameraId: null, statusText: "offline", statusClass: "status-offline" },
+            { label: "V3", cameraId: null, statusText: "offline", statusClass: "status-offline" },
+            { label: "V4", cameraId: null, statusText: "offline", statusClass: "status-offline" },
+            { label: "V5", cameraId: null, statusText: "offline", statusClass: "status-offline" }
+          ],
 
-    function updateCameraSummary() {
-      const total = cameras.size;
-      const liveCount = cameras.size; // for now, all connected are "live feeds"
-      cameraSummaryEl.textContent =
-        total === 0 ? "No cameras connected." : `Cameras connected: ${total}`;
-    }
+          // cameraId -> { pc, stream, slotIndex }
+          cameras: {},
+          currentPreviewId: null,
+          currentLiveId: null,
+          socket: null
+        };
+      },
 
-    function assignSlotForCamera(cameraId) {
-      if (cameraOrder.includes(cameraId)) {
-        return cameraOrder.indexOf(cameraId);
-      }
-      // find first free slot
-      for (let i = 0; i < cameraSlots.length; i++) {
-        const occupied = cameraOrder[i];
-        if (!occupied) {
-          cameraOrder[i] = cameraId;
-          return i;
-        }
-      }
-      // if full, append (will overflow, but we keep mapping)
-      cameraOrder.push(cameraId);
-      return cameraOrder.length - 1;
-    }
+      mounted() {
+        this.initSocket();
+      },
 
-    function getSlotElements(slotIndex) {
-      const slot = cameraSlots[slotIndex];
-      if (!slot) return null;
-      return {
-        slot,
-        statusEl: slot.querySelector(".camera-status"),
-        thumbWrapper: slot.querySelector(".camera-thumb-wrapper"),
-        thumbVideo: slot.querySelector("video"),
-        overlay: slot.querySelector(".camera-thumb-overlay"),
-        idText: slot.querySelector(".camera-id-text"),
-      };
-    }
+      methods: {
+        logStatus(msg) {
+          console.log(msg);
+          this.status = msg;
+        },
 
-    function setSlotState(slotIndex, stateText, className) {
-      const els = getSlotElements(slotIndex);
-      if (!els) return;
-      els.statusEl.textContent = stateText;
-      els.statusEl.classList.remove("status-offline", "status-connecting", "status-live", "status-previewing");
-      els.statusEl.classList.add(className);
-    }
+        updateCameraSummary() {
+          const count = Object.keys(this.cameras).length;
+          this.cameraSummary =
+            count === 0 ? "No cameras connected." : `Cameras connected: ${count}`;
+        },
 
-    function markActivePreviewLive() {
-      cameraSlots.forEach((slot, idx) => {
-        const els = getSlotElements(idx);
-        if (!els) return;
-        els.thumbWrapper.classList.remove("active-preview", "active-live");
-        const camId = cameraOrder[idx];
-        if (!camId) return;
-        if (camId === currentPreviewId) {
-          els.thumbWrapper.classList.add("active-preview");
-        }
-        if (camId === currentLiveId) {
-          els.thumbWrapper.classList.add("active-live");
-        }
-      });
-    }
+        assignSlotForCamera(cameraId) {
+          // If already assigned
+          const existingIndex = this.cameraSlots.findIndex(
+            s => s.cameraId === cameraId
+          );
+          if (existingIndex !== -1) return existingIndex;
 
-    function setPreviewCamera(cameraId) {
-      const info = cameras.get(cameraId);
-      if (!info || !info.stream) return;
-
-      currentPreviewId = cameraId;
-      previewVideo.srcObject = info.stream;
-      previewMeta.textContent = `Previewing ${cameraId}`;
-      takeButton.disabled = false;
-      markActivePreviewLive();
-    }
-
-    function setLiveFromPreview() {
-      if (!currentPreviewId) return;
-      const info = cameras.get(currentPreviewId);
-      if (!info || !info.stream) return;
-
-      currentLiveId = currentPreviewId;
-      liveVideo.srcObject = info.stream;
-      liveMeta.textContent = `On Air: ${currentLiveId}`;
-      markActivePreviewLive();
-    }
-
-    takeButton.addEventListener("click", setLiveFromPreview);
-
-    // Clicking a thumb sets Preview
-    cameraSlots.forEach((slot, idx) => {
-      const els = getSlotElements(idx);
-      els.thumbWrapper.addEventListener("click", () => {
-        const camId = cameraOrder[idx];
-        if (camId) {
-          setPreviewCamera(camId);
-        }
-      });
-    });
-
-    // Socket.io events
-    socket.on("connect", () => {
-      logStatus("Connected. Joining as admin…");
-      socket.emit("join", { role: "admin" });
-    });
-
-    socket.on("camera-joined", ({ cameraId }) => {
-      console.log("[ADMIN] Camera joined:", cameraId);
-      let info = cameras.get(cameraId);
-      if (!info) {
-        const slotIndex = assignSlotForCamera(cameraId);
-        const els = getSlotElements(slotIndex);
-        if (els) {
-          els.idText.textContent = cameraId;
-          setSlotState(slotIndex, "connecting", "status-connecting");
-        }
-        info = { pc: null, stream: null, slotIndex };
-        cameras.set(cameraId, info);
-      }
-      updateCameraSummary();
-    });
-
-    socket.on("camera-left", ({ cameraId }) => {
-      console.log("[ADMIN] Camera left:", cameraId);
-      const info = cameras.get(cameraId);
-      if (info) {
-        if (info.pc) {
-          try { info.pc.close(); } catch (e) {}
-        }
-        const els = getSlotElements(info.slotIndex);
-        if (els) {
-          if (els.thumbVideo.srcObject) {
-            els.thumbVideo.srcObject.getTracks().forEach(t => t.stop());
-            els.thumbVideo.srcObject = null;
+          // Find first free slot
+          const freeIndex = this.cameraSlots.findIndex(s => !s.cameraId);
+          if (freeIndex !== -1) {
+            this.cameraSlots[freeIndex].cameraId = cameraId;
+            return freeIndex;
           }
-          setSlotState(info.slotIndex, "offline", "status-offline");
-        }
-        if (currentPreviewId === cameraId) {
-          currentPreviewId = null;
-          previewVideo.srcObject = null;
-          previewMeta.textContent = "None selected";
-          takeButton.disabled = true;
-        }
-        if (currentLiveId === cameraId) {
-          currentLiveId = null;
-          liveVideo.srcObject = null;
-          liveMeta.textContent = "None on air";
-        }
-        cameras.delete(cameraId);
-        updateCameraSummary();
-      }
-    });
 
-    // Handle WebRTC offer
-    socket.on("webrtc-offer", async ({ fromCameraId, sdp }) => {
-      logStatus(`Received offer from camera ${fromCameraId}`);
-      console.log("[ADMIN] webrtc-offer from", fromCameraId, sdp);
+          // If none free, reuse last slot (simple fallback)
+          return this.cameraSlots.length - 1;
+        },
 
-      let info = cameras.get(fromCameraId);
-      if (!info) {
-        const slotIndex = assignSlotForCamera(fromCameraId);
-        info = { pc: null, stream: null, slotIndex };
-        cameras.set(fromCameraId, info);
-      }
+        setSlotState(slotIndex, text, className) {
+          const slot = this.cameraSlots[slotIndex];
+          if (!slot) return;
+          slot.statusText = text;
+          slot.statusClass = className;
+        },
 
-      if (info.pc) {
-        try { info.pc.close(); } catch (e) {}
-      }
+        getThumbVideo(slotIndex) {
+          const ref = this.$refs["thumbVideo-" + slotIndex];
+          if (!ref) return null;
+          // v-for refs become arrays
+          return Array.isArray(ref) ? ref[0] : ref;
+        },
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
-      info.pc = pc;
-      const els = getSlotElements(info.slotIndex);
-      if (els) setSlotState(info.slotIndex, "connecting", "status-connecting");
+        markActivePreviewLive() {
+          // Purely class-based in template, nothing to do here for now
+        },
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit("webrtc-ice-candidate", {
-            targetId: fromCameraId,
-            candidate: event.candidate,
+        setPreviewCamera(cameraId) {
+          const info = this.cameras[cameraId];
+          if (!info || !info.stream) return;
+          this.currentPreviewId = cameraId;
+
+          const previewVideo = this.$refs.previewVideo;
+          previewVideo.srcObject = info.stream;
+          this.previewMeta = `Previewing ${cameraId}`;
+          this.takeEnabled = true;
+          this.markActivePreviewLive();
+        },
+
+        setLiveFromPreview() {
+          if (!this.currentPreviewId) return;
+          const info = this.cameras[this.currentPreviewId];
+          if (!info || !info.stream) return;
+
+          this.currentLiveId = this.currentPreviewId;
+          const liveVideo = this.$refs.liveVideo;
+          liveVideo.srcObject = info.stream;
+          this.liveMeta = `On Air: ${this.currentLiveId}`;
+          this.markActivePreviewLive();
+        },
+
+        initSocket() {
+          this.socket = io();
+
+          this.socket.on("connect", () => {
+            this.logStatus("Connected. Joining as admin…");
+            this.socket.emit("join", { role: "admin" });
+          });
+
+          this.socket.on("camera-joined", ({ cameraId }) => {
+            console.log("[ADMIN] Camera joined:", cameraId);
+            if (!this.cameras[cameraId]) {
+              const slotIndex = this.assignSlotForCamera(cameraId);
+              this.setSlotState(slotIndex, "connecting", "status-connecting");
+              this.cameras[cameraId] = { pc: null, stream: null, slotIndex };
+            }
+            this.updateCameraSummary();
+          });
+
+          this.socket.on("camera-left", ({ cameraId }) => {
+            console.log("[ADMIN] Camera left:", cameraId);
+            const info = this.cameras[cameraId];
+            if (info) {
+              if (info.pc) {
+                try { info.pc.close(); } catch (e) {}
+              }
+              const thumbVideo = this.getThumbVideo(info.slotIndex);
+              if (thumbVideo && thumbVideo.srcObject) {
+                thumbVideo.srcObject.getTracks().forEach(t => t.stop());
+                thumbVideo.srcObject = null;
+              }
+              this.setSlotState(info.slotIndex, "offline", "status-offline");
+
+              if (this.currentPreviewId === cameraId) {
+                this.currentPreviewId = null;
+                this.$refs.previewVideo.srcObject = null;
+                this.previewMeta = "None selected";
+                this.takeEnabled = false;
+              }
+              if (this.currentLiveId === cameraId) {
+                this.currentLiveId = null;
+                this.$refs.liveVideo.srcObject = null;
+                this.liveMeta = "None on air";
+              }
+
+              delete this.cameras[cameraId];
+              this.updateCameraSummary();
+            }
+          });
+
+          this.socket.on("webrtc-offer", async ({ fromCameraId, sdp }) => {
+            this.logStatus(`Received offer from camera ${fromCameraId}`);
+            console.log("[ADMIN] webrtc-offer from", fromCameraId, sdp);
+
+            let info = this.cameras[fromCameraId];
+            if (!info) {
+              const slotIndex = this.assignSlotForCamera(fromCameraId);
+              info = { pc: null, stream: null, slotIndex };
+              this.cameras[fromCameraId] = info;
+            }
+
+            if (info.pc) {
+              try { info.pc.close(); } catch (e) {}
+            }
+
+            const pc = new RTCPeerConnection({
+              iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+            });
+            info.pc = pc;
+            this.setSlotState(info.slotIndex, "connecting", "status-connecting");
+
+            pc.onicecandidate = (event) => {
+              if (event.candidate) {
+                this.socket.emit("webrtc-ice-candidate", {
+                  targetId: fromCameraId,
+                  candidate: event.candidate
+                });
+              }
+            };
+
+            pc.onconnectionstatechange = () => {
+              console.log("[ADMIN] PC state for", fromCameraId, "=", pc.connectionState);
+              if (pc.connectionState === "connected") {
+                this.setSlotState(info.slotIndex, "live", "status-live");
+                this.logStatus("Connected to one or more cameras.");
+              } else if (
+                pc.connectionState === "disconnected" ||
+                pc.connectionState === "failed"
+              ) {
+                this.setSlotState(info.slotIndex, "offline", "status-offline");
+              }
+            };
+
+            pc.ontrack = (event) => {
+              console.log("[ADMIN] Remote track from", fromCameraId, event.streams, event.track);
+
+              let stream = event.streams && event.streams[0];
+              if (!stream) {
+                if (info.stream instanceof MediaStream) {
+                  stream = info.stream;
+                } else {
+                  stream = new MediaStream();
+                }
+                stream.addTrack(event.track);
+              }
+              info.stream = stream;
+
+              const thumbVideo = this.getThumbVideo(info.slotIndex);
+              if (thumbVideo && thumbVideo.srcObject !== stream) {
+                thumbVideo.srcObject = stream;
+              }
+
+              // Auto-assign first preview/live
+              if (!this.currentPreviewId) {
+                this.setPreviewCamera(fromCameraId);
+              }
+              if (!this.currentLiveId) {
+                this.setLiveFromPreview();
+              }
+            };
+
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              this.socket.emit("webrtc-answer", {
+                toCameraId: fromCameraId,
+                sdp: pc.localDescription
+              });
+              this.logStatus(`Sent answer to camera ${fromCameraId}`);
+            } catch (err) {
+              console.error("[ADMIN] Error handling offer for", fromCameraId, err);
+              this.setSlotState(info.slotIndex, "offline", "status-offline");
+              this.logStatus("Error handling offer. See console.");
+            }
+
+            this.updateCameraSummary();
+          });
+
+          this.socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
+            const info = this.cameras[fromId];
+            if (!info || !info.pc) return;
+            try {
+              await info.pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (err) {
+              console.error("[ADMIN] Error adding ICE candidate from", fromId, err);
+            }
           });
         }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log("[ADMIN] PC state for", fromCameraId, "=", pc.connectionState);
-        if (pc.connectionState === "connected") {
-          if (els) setSlotState(info.slotIndex, "live", "status-live");
-          logStatus("Connected to one or more cameras.");
-        } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
-          if (els) setSlotState(info.slotIndex, "offline", "status-offline");
-        }
-      };
-
-      pc.ontrack = (event) => {
-        console.log("[ADMIN] Remote track from", fromCameraId, event.streams, event.track);
-        let stream = event.streams && event.streams[0];
-        if (!stream) {
-          if (info.stream instanceof MediaStream) {
-            stream = info.stream;
-          } else {
-            stream = new MediaStream();
-          }
-          stream.addTrack(event.track);
-        }
-        info.stream = stream;
-
-        const els = getSlotElements(info.slotIndex);
-        if (els && els.thumbVideo.srcObject !== stream) {
-          els.thumbVideo.srcObject = stream;
-        }
-
-        // If nothing preview/live yet, auto-assign first camera
-        if (!currentPreviewId) {
-          setPreviewCamera(fromCameraId);
-        }
-        if (!currentLiveId) {
-          setLiveFromPreview();
-        }
-      };
-
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit("webrtc-answer", {
-          toCameraId: fromCameraId,
-          sdp: pc.localDescription,
-        });
-        logStatus(`Sent answer to camera ${fromCameraId}`);
-      } catch (err) {
-        console.error("[ADMIN] Error handling offer for", fromCameraId, err);
-        if (els) setSlotState(info.slotIndex, "offline", "status-offline");
-        logStatus("Error handling offer. See console.");
       }
-
-      updateCameraSummary();
-    });
-
-    socket.on("webrtc-ice-candidate", async ({ fromId, candidate }) => {
-      const info = cameras.get(fromId);
-      if (!info || !info.pc) return;
-      try {
-        await info.pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (err) {
-        console.error("[ADMIN] Error adding ICE candidate from", fromId, err);
-      }
-    });
+    }).mount("#app");
   </script>
 </body>
 </html>

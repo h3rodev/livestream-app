@@ -1,0 +1,16 @@
+{
+  "name": "livestream-app",
+  "private": true,
+  "version": "0.1.5",
+  "workspaces": [
+    "admin-ui",
+    "camera-ui"
+  ],
+  "scripts": {
+    "dev:admin": "npm run dev --workspace admin-ui",
+    "dev:camera": "npm run dev --workspace camera-ui",
+    "build:admin": "npm run build --workspace admin-ui",
+    "build:camera": "npm run build --workspace camera-ui",
+    "dev:server": "cd server && npm run dev"
+  }
+}
