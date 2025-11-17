@@ -16,14 +16,33 @@
     </div>
 
     <div class="controls">
-      <button @click="startCamera" :disabled="isStreaming">Start Camera</button>
-      <button @click="stopCamera" :disabled="!isStreaming">Stop</button>
+      <button @click="startCamera" :disabled="isStreaming">
+        Start Camera
+      </button>
+      <button @click="stopCamera" :disabled="!isStreaming">
+        Stop
+      </button>
+    </div>
+
+    <div class="controls rec-controls" v-if="isStreaming">
+      <button
+        class="rec-btn"
+        :class="{ 'rec-on': isRecording }"
+        @click="toggleRecording"
+      >
+        <span class="rec-dot" :class="{ 'rec-dot-on': isRecording }"></span>
+        <span v-if="!isRecording">REC</span>
+        <span v-else>STOP</span>
+      </button>
+      <span class="rec-timer">{{ recordingTimeLabel }}</span>
     </div>
 
     <div class="debug">
       <div><strong>Camera ID:</strong> {{ cameraId || '—' }}</div>
       <div><strong>Resolution:</strong> {{ resolution }}</div>
       <div><strong>ICE Status:</strong> {{ iceStatus }}</div>
+      <div><strong>Recording:</strong> {{ isRecording ? 'ON' : 'OFF' }}</div>
+      <div><strong>Last upload:</strong> {{ lastUploadStatus }}</div>
     </div>
   </div>
 </template>
@@ -45,7 +64,27 @@ export default {
       pc: null,
       stream: null,
       isStreaming: false,
+
+      // Recording
+      isRecording: false,
+      recorder: null,
+      recordChunks: [],
+      recordStartedAt: null,
+      recordTimerId: null,
+      recordElapsedSeconds: 0,
+
+      lastUploadStatus: '—',
     }
+  },
+
+  computed: {
+    recordingTimeLabel() {
+      const sec = this.recordElapsedSeconds || 0
+      const h = String(Math.floor(sec / 3600)).padStart(2, '0')
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0')
+      const s = String(sec % 60).padStart(2, '0')
+      return `${h}:${m}:${s}`
+    },
   },
 
   mounted() {
@@ -67,7 +106,6 @@ export default {
         this.socket.emit('join', { role: 'camera' })
       })
 
-      // Answer from admin: { sdp }
       this.socket.on('webrtc-answer', async ({ sdp }) => {
         if (!this.pc) return
         try {
@@ -77,7 +115,6 @@ export default {
         }
       })
 
-      // ICE from admin: { fromId?, candidate }
       this.socket.on('webrtc-ice-candidate', async (payload) => {
         if (!this.pc) return
         const candidate = payload?.candidate || payload
@@ -157,6 +194,10 @@ export default {
     },
 
     stopCamera() {
+      if (this.isRecording) {
+        this.stopRecording()
+      }
+
       if (this.stream) {
         this.stream.getTracks().forEach((t) => t.stop())
       }
@@ -177,6 +218,188 @@ export default {
       if (videoEl && videoEl.srcObject) {
         videoEl.srcObject = null
       }
+    },
+
+    // --- Recording ---
+
+    toggleRecording() {
+      if (!this.stream) return
+      if (this.isRecording) {
+        this.stopRecording()
+      } else {
+        this.startRecording()
+      }
+    },
+
+    startRecording() {
+      if (!this.stream) {
+        console.warn('[REC] No stream available for recording')
+        return
+      }
+
+      let options = undefined
+      try {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+          options = { mimeType: 'video/webm;codecs=vp8,opus' }
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options = { mimeType: 'video/webm' }
+        }
+      } catch (e) {
+        console.warn('[REC] MediaRecorder.isTypeSupported check failed, using default', e)
+      }
+
+      try {
+        this.recorder = options
+          ? new MediaRecorder(this.stream, options)
+          : new MediaRecorder(this.stream)
+      } catch (e) {
+        console.error('[REC] Failed to create MediaRecorder', e)
+        return
+      }
+
+      this.recordChunks = []
+      this.recordStartedAt = new Date()
+      this.recordElapsedSeconds = 0
+      this.lastUploadStatus = 'recording…'
+
+      this.recorder.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) {
+          this.recordChunks.push(evt.data)
+        }
+      }
+
+      this.recorder.onerror = (evt) => {
+        console.error('[REC] MediaRecorder error:', evt.error || evt)
+      }
+
+      this.recorder.onstop = async () => {
+        const endedAt = new Date()
+        const startedAt = this.recordStartedAt
+        const durationSeconds = this.recordElapsedSeconds
+
+        if (this.recordTimerId) {
+          clearInterval(this.recordTimerId)
+          this.recordTimerId = null
+        }
+
+        if (!this.recordChunks.length) {
+          console.warn('[REC] No data chunks recorded')
+          this.lastUploadStatus = 'no data'
+        } else {
+          const mimeType = this.recorder.mimeType || 'video/webm'
+          const blob = new Blob(this.recordChunks, { type: mimeType })
+
+          const baseName = this.makeRecordingBaseName(startedAt)
+
+          // Local download (optional, can remove later)
+          this.downloadBlob(blob, `${baseName}.webm`)
+
+          const meta = {
+            cameraId: this.cameraId,
+            startedAt: startedAt.toISOString(),
+            endedAt: endedAt.toISOString(),
+            durationSeconds,
+          }
+          const metaBlob = new Blob([JSON.stringify(meta, null, 2)], {
+            type: 'application/json',
+          })
+          this.downloadBlob(metaBlob, `${baseName}.json`)
+
+          // Upload to server
+          try {
+            await this.uploadRecordingToServer(blob, meta, `${baseName}.webm`)
+            this.lastUploadStatus = 'uploaded ✅'
+          } catch (err) {
+            console.error('[UPLOAD] Failed to upload recording', err)
+            this.lastUploadStatus = 'upload failed ❌'
+          }
+        }
+
+        this.isRecording = false
+      }
+
+      this.recordTimerId = setInterval(() => {
+        this.recordElapsedSeconds += 1
+      }, 1000)
+
+      try {
+        this.recorder.start()
+        this.isRecording = true
+        console.log('[REC] Started recording on camera, mime:', this.recorder.mimeType)
+      } catch (e) {
+        console.error('[REC] recorder.start failed', e)
+      }
+    },
+
+    stopRecording() {
+      if (!this.recorder || !this.isRecording) return
+
+      try {
+        this.recorder.stop()
+      } catch (e) {
+        console.error('[REC] recorder.stop failed', e)
+      }
+
+      if (this.recordTimerId) {
+        clearInterval(this.recordTimerId)
+        this.recordTimerId = null
+      }
+    },
+
+    makeRecordingBaseName(dateObj) {
+      const safeId = (this.cameraId || 'camera').replace(/[^a-zA-Z0-9_-]/g, '')
+      const iso = dateObj.toISOString().replace(/[:.]/g, '-')
+      return `cam-${safeId}-${iso}`
+    },
+
+    downloadBlob(blob, filename) {
+      if (!blob || !blob.size) {
+        console.warn('[REC] Tried to download empty blob for', filename)
+        return
+      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    },
+
+    async uploadRecordingToServer(blob, meta, filename) {
+      const proto = window.location.protocol
+      const host = window.location.hostname
+      const port = 3000
+
+      const params = new URLSearchParams({
+        cameraId: meta.cameraId || '',
+        startedAt: meta.startedAt || '',
+        endedAt: meta.endedAt || '',
+        durationSeconds: String(meta.durationSeconds ?? ''),
+        filename: filename || 'recording.webm',
+      })
+
+      const uploadUrl = `${proto}//${host}:${port}/api/upload-recording?${params.toString()}`
+
+      console.log('[UPLOAD] Uploading to', uploadUrl)
+
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: blob,
+      })
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`Upload failed: ${response.status} ${text}`)
+      }
+
+      const json = await response.json().catch(() => null)
+      console.log('[UPLOAD] Server response:', json)
+      return json
     },
   },
 }
@@ -230,6 +453,7 @@ video {
   display: flex;
   justify-content: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 button {
@@ -242,6 +466,44 @@ button {
 }
 button:disabled {
   background: #404040;
+}
+
+.rec-controls {
+  margin-top: -6px;
+}
+
+.rec-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid #ef4444;
+  background: #111827;
+  color: #ef4444;
+  font-size: 13px;
+}
+.rec-btn.rec-on {
+  background: #7f1d1d;
+  color: #fee2e2;
+}
+
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+  opacity: 0.4;
+}
+.rec-dot-on {
+  opacity: 1;
+}
+
+.rec-timer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  color: #e5e7eb;
+  align-self: center;
 }
 
 .debug {

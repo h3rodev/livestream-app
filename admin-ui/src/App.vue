@@ -135,14 +135,21 @@
             <span class="camera-label">{{ slot.label }}</span>
             <span
               class="camera-status"
-              :class="slot.statusClass"
-            >{{ slot.statusText }}</span>
+              :class="[
+                slot.statusClass,
+                isRecording(slot.cameraId) ? 'status-recording' : ''
+              ]"
+            >
+              {{ slot.statusText }}
+            </span>
           </div>
+
           <div
             class="camera-thumb-wrapper"
             :class="{
               'active-preview': slot.cameraId === currentPreviewId,
-              'active-live': slot.cameraId === currentLiveId
+              'active-live': slot.cameraId === currentLiveId,
+              'recording-border': isRecording(slot.cameraId)
             }"
             @click="slot.cameraId && setPreviewCamera(slot.cameraId)"
           >
@@ -154,6 +161,26 @@
             ></video>
             <div class="camera-thumb-overlay"></div>
           </div>
+
+          <!-- Recording controls per camera -->
+          <div
+            v-if="slot.cameraId"
+            class="camera-rec-row"
+          >
+            <button
+              class="rec-button"
+              :class="{ 'rec-on': isRecording(slot.cameraId) }"
+              @click.stop="toggleRecording(slot.cameraId)"
+            >
+              <span class="rec-dot" :class="{ 'rec-dot-on': isRecording(slot.cameraId) }"></span>
+              <span v-if="!isRecording(slot.cameraId)">REC</span>
+              <span v-else>STOP</span>
+            </button>
+            <span class="rec-timer">
+              {{ recordingTimeLabel(slot.cameraId) }}
+            </span>
+          </div>
+
           <div class="camera-id-text">
             {{ slot.cameraId || '—' }}
           </div>
@@ -196,6 +223,9 @@ export default {
       audioReady: false,
       masterVolume: 1.0,
       masterVolumeSlider: 100,
+
+      // Recording state
+      recordings: {},       // cameraId -> { isRecording, startedAt, elapsedSeconds, chunks, recorder, timerId }
     }
   },
 
@@ -357,6 +387,197 @@ export default {
       }
     },
 
+    // --- RECORDING LOGIC ---
+
+    isRecording(cameraId) {
+      if (!cameraId) return false
+      return !!(this.recordings[cameraId] && this.recordings[cameraId].isRecording)
+    },
+
+    recordingTimeLabel(cameraId) {
+      const rec = this.recordings[cameraId]
+      const sec = rec && rec.elapsedSeconds ? rec.elapsedSeconds : 0
+      const h = String(Math.floor(sec / 3600)).padStart(2, '0')
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0')
+      const s = String(sec % 60).padStart(2, '0')
+      return `${h}:${m}:${s}`
+    },
+
+    toggleRecording(cameraId) {
+      if (!cameraId) return
+      if (this.isRecording(cameraId)) {
+        this.stopRecording(cameraId)
+      } else {
+        this.startRecording(cameraId)
+      }
+    },
+
+        startRecording(cameraId) {
+      const info = this.cameras[cameraId]
+      if (!info || !info.stream) {
+        console.warn('[REC] No stream for camera', cameraId)
+        return
+      }
+
+      let options = undefined
+      try {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+          options = { mimeType: 'video/webm;codecs=vp8,opus' }
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          options = { mimeType: 'video/webm' }
+        }
+      } catch (e) {
+        console.warn('[REC] MediaRecorder.isTypeSupported check failed, using default', e)
+      }
+
+      let recorder
+      try {
+        recorder = options
+          ? new MediaRecorder(info.stream, options)
+          : new MediaRecorder(info.stream)
+      } catch (e) {
+        console.error('[REC] Failed to create MediaRecorder', e)
+        return
+      }
+
+      const recState = {
+        isRecording: true,
+        startedAt: new Date(),
+        elapsedSeconds: 0,
+        chunks: [],
+        recorder,
+        timerId: null,
+      }
+
+      recorder.ondataavailable = (evt) => {
+        if (evt.data && evt.data.size > 0) {
+          recState.chunks.push(evt.data)
+        }
+      }
+
+      recorder.onerror = (evt) => {
+        console.error('[REC] MediaRecorder error:', evt.error || evt)
+      }
+
+      recorder.onstop = () => {
+        const endedAt = new Date()
+        const startedAt = recState.startedAt
+        const durationSeconds = recState.elapsedSeconds
+
+        if (recState.timerId) {
+          clearInterval(recState.timerId)
+          recState.timerId = null
+        }
+
+        if (!recState.chunks.length) {
+          console.warn('[REC] No data chunks recorded for', cameraId)
+        } else {
+          const mimeType = recorder.mimeType || 'video/webm'
+          const blob = new Blob(recState.chunks, { type: mimeType })
+
+          const baseName = this.makeRecordingBaseName(cameraId, startedAt)
+          this.downloadBlob(blob, `${baseName}.webm`)
+        }
+
+        const meta = {
+          cameraId,
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          durationSeconds,
+        }
+        const metaBlob = new Blob([JSON.stringify(meta, null, 2)], {
+          type: 'application/json',
+        })
+        const baseName = this.makeRecordingBaseName(cameraId, startedAt)
+        this.downloadBlob(metaBlob, `${baseName}.json`)
+
+        recState.isRecording = false
+      }
+
+      // Start timer
+      recState.timerId = setInterval(() => {
+        recState.elapsedSeconds += 1
+      }, 1000)
+
+      // Save state & start
+      this.recordings[cameraId] = recState
+
+      try {
+        // No timeslice: let the browser buffer and emit on stop
+        recorder.start()
+        console.log('[REC] Started recording for', cameraId, 'mime:', recorder.mimeType)
+      } catch (e) {
+        console.error('[REC] recorder.start failed', e)
+      }
+    },
+
+    stopRecording(cameraId) {
+      const rec = this.recordings[cameraId]
+      if (!rec || !rec.isRecording || !rec.recorder) return
+
+      try {
+        rec.recorder.stop()
+      } catch (e) {
+        console.error('[REC] recorder.stop failed', e)
+      }
+
+      rec.isRecording = false
+      if (rec.timerId) {
+        clearInterval(rec.timerId)
+        rec.timerId = null
+      }
+    },
+
+    downloadBlob(blob, filename) {
+      if (!blob || !blob.size) {
+        console.warn('[REC] Tried to download empty blob for', filename)
+        return
+      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    },
+
+
+    stopRecording(cameraId) {
+      const rec = this.recordings[cameraId]
+      if (!rec || !rec.isRecording || !rec.recorder) return
+
+      try {
+        rec.recorder.stop()
+      } catch (e) {
+        console.error('[REC] recorder.stop failed', e)
+      }
+
+      rec.isRecording = false
+      if (rec.timerId) {
+        clearInterval(rec.timerId)
+        rec.timerId = null
+      }
+    },
+
+    makeRecordingBaseName(cameraId, dateObj) {
+      const safeId = cameraId.replace(/[^a-zA-Z0-9_-]/g, '')
+      const iso = dateObj.toISOString().replace(/[:.]/g, '-')
+      return `cam-${safeId}-${iso}`
+    },
+
+    downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    },
+
     // --- SOCKET / WEBRTC ---
 
     initSocket() {
@@ -405,6 +626,11 @@ export default {
             this.currentLiveId = null
             this.$refs.liveVideo.srcObject = null
             this.liveMeta = 'None on air'
+          }
+
+          // If recording, stop & finalize
+          if (this.isRecording(cameraId)) {
+            this.stopRecording(cameraId)
           }
 
           this.teardownCameraAudio(cameraId)
@@ -769,10 +995,10 @@ video {
   color: #22c55e;
   background: rgba(34, 197, 94, 0.18);
 }
-.status-previewing {
-  border-color: #38bdf8;
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.18);
+.status-recording {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .camera-thumb-wrapper {
@@ -784,7 +1010,7 @@ video {
   cursor: pointer;
 }
 
-.camera-thumb-wrapper video {
+.camera-thumb-wrapper.video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -801,6 +1027,52 @@ video {
 }
 .camera-thumb-wrapper.active-live .camera-thumb-overlay {
   border-color: #22c55e;
+}
+.camera-thumb-wrapper.recording-border .camera-thumb-overlay {
+  box-shadow: 0 0 0 1px #ef4444, 0 0 12px rgba(239, 68, 68, 0.6);
+}
+
+/* Recording controls */
+.camera-rec-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.rec-button {
+  border-radius: 999px;
+  border: 1px solid #ef4444;
+  background: #111827;
+  color: #ef4444;
+  padding: 2px 8px;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.rec-button.rec-on {
+  background: #7f1d1d;
+  color: #fee2e2;
+}
+
+.rec-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  opacity: 0.4;
+}
+.rec-dot-on {
+  opacity: 1;
+}
+
+.rec-timer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 10px;
+  color: #e5e7eb;
 }
 
 .camera-id-text {
