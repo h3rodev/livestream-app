@@ -11,26 +11,22 @@ const __dirname = path.dirname(__filename)
 
 const app = express()
 
-// --- Basic CORS for fetch() from Vite dev servers / LAN ---
+// --- Basic CORS ---
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*')
   res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.header('Access-Control-Allow-Headers', 'Content-Type')
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200)
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(200)
   next()
 })
 
-// --- Static files (if you use /public) ---
+// --- Static files (optional) ---
 const publicDir = path.join(__dirname, '..', 'public')
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir))
 }
 
-// --- API: Upload recording (raw binary body) ---
-// Usage (client):
-// POST /api/upload-recording?cameraId=XXX&startedAt=...&endedAt=...&durationSeconds=...&filename=NAME.webm
+// --- API: Upload recording ---
 app.post('/api/upload-recording', (req, res) => {
   const {
     cameraId = 'unknown',
@@ -59,7 +55,6 @@ app.post('/api/upload-recording', (req, res) => {
   const metaPath = videoPath.replace(/\.webm$/i, '.json')
 
   const writeStream = fs.createWriteStream(videoPath)
-
   req.pipe(writeStream)
 
   writeStream.on('finish', () => {
@@ -73,9 +68,7 @@ app.post('/api/upload-recording', (req, res) => {
     }
 
     fs.writeFile(metaPath, JSON.stringify(meta, null, 2), (err) => {
-      if (err) {
-        console.error('[UPLOAD] Failed to write meta file', err)
-      }
+      if (err) console.error('[UPLOAD] Failed to write meta file', err)
     })
 
     console.log(
@@ -128,9 +121,7 @@ io.on('connection', (socket) => {
       admins.add(socket.id)
       socket.emit(
         'info',
-        `Joined as admin. Current cameras: ${Array.from(cameras.keys()).join(
-          ', ',
-        )}`,
+        `Joined as admin. Current cameras: ${Array.from(cameras.keys()).join(', ')}`,
       )
       // Send currently known cameras
       cameras.forEach((_info, camId) => {
@@ -168,6 +159,22 @@ io.on('connection', (socket) => {
     if (!targetId || !candidate) return
     console.log('ICE candidate from', socket.id, 'to', targetId)
     io.to(targetId).emit('webrtc-ice-candidate', { fromId: socket.id, candidate })
+  })
+
+  // LIVE STATE from admin → camera
+  socket.on('live-state', ({ cameraId, isLive }) => {
+    console.log('[SERVER] live-state → camera', cameraId, 'isLive:', isLive)
+    if (cameraId) {
+      io.to(cameraId).emit('live-state', { cameraId, isLive })
+    }
+  })
+
+  // RECORD CONTROL from admin → camera
+  socket.on('record-control', ({ cameraId, action }) => {
+    console.log('[SERVER] record-control → camera', cameraId, 'action:', action)
+    if (cameraId && action) {
+      io.to(cameraId).emit('record-control', { cameraId, action })
+    }
   })
 
   socket.on('disconnect', () => {

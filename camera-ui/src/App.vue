@@ -15,6 +15,11 @@
       ></video>
     </div>
 
+    <!-- LIVE INDICATOR -->
+    <div v-if="isLive" class="live-indicator">
+      LIVE
+    </div>
+
     <div class="controls">
       <button @click="startCamera" :disabled="isStreaming">
         Start Camera
@@ -42,6 +47,7 @@
       <div><strong>Resolution:</strong> {{ resolution }}</div>
       <div><strong>ICE Status:</strong> {{ iceStatus }}</div>
       <div><strong>Recording:</strong> {{ isRecording ? 'ON' : 'OFF' }}</div>
+      <div><strong>LIVE:</strong> {{ isLive ? 'YES' : 'NO' }}</div>
       <div><strong>Last upload:</strong> {{ lastUploadStatus }}</div>
     </div>
   </div>
@@ -74,6 +80,9 @@ export default {
       recordElapsedSeconds: 0,
 
       lastUploadStatus: '—',
+
+      // LIVE STATE FROM ADMIN
+      isLive: false,
     }
   },
 
@@ -122,7 +131,32 @@ export default {
         try {
           await this.pc.addIceCandidate(new RTCIceCandidate(candidate))
         } catch (err) {
-          console.error('[CAMERA] Error adding ICE candidate from admin:', err)
+          console.error('[CAMERA] Error adding ICE candidate:', err)
+        }
+      })
+
+      // LIVE STATE RECEIVED FROM ADMIN
+      this.socket.on('live-state', ({ cameraId, isLive }) => {
+        if (cameraId === this.cameraId) {
+          this.isLive = !!isLive
+        } else {
+          // Another camera went live => ensure this is not marked live
+          this.isLive = false
+        }
+      })
+
+      // ADMIN TRIGGERS CAMERA RECORDING
+      this.socket.on('record-control', ({ cameraId, action }) => {
+        if (cameraId !== this.cameraId) return
+
+        if (action === 'start') {
+          if (!this.isRecording) {
+            this.startRecording()
+          }
+        } else if (action === 'stop') {
+          if (this.isRecording) {
+            this.stopRecording()
+          }
         }
       })
     },
@@ -140,8 +174,7 @@ export default {
           audio: true,
         })
 
-        const videoEl = this.$refs.localVideo
-        videoEl.srcObject = this.stream
+        this.$refs.localVideo.srcObject = this.stream
 
         const vTrack = this.stream.getVideoTracks()[0]
         if (vTrack) {
@@ -177,7 +210,6 @@ export default {
 
       this.pc.oniceconnectionstatechange = () => {
         this.iceStatus = this.pc.iceConnectionState
-        console.log('[CAMERA] ICE state:', this.iceStatus)
       }
 
       this.stream.getTracks().forEach((t) => {
@@ -204,7 +236,7 @@ export default {
       if (this.pc) {
         try {
           this.pc.close()
-        } catch (e) {}
+        } catch {}
       }
 
       this.stream = null
@@ -283,15 +315,12 @@ export default {
         }
 
         if (!this.recordChunks.length) {
-          console.warn('[REC] No data chunks recorded')
           this.lastUploadStatus = 'no data'
         } else {
           const mimeType = this.recorder.mimeType || 'video/webm'
           const blob = new Blob(this.recordChunks, { type: mimeType })
-
           const baseName = this.makeRecordingBaseName(startedAt)
 
-          // Local download (optional, can remove later)
           this.downloadBlob(blob, `${baseName}.webm`)
 
           const meta = {
@@ -305,7 +334,6 @@ export default {
           })
           this.downloadBlob(metaBlob, `${baseName}.json`)
 
-          // Upload to server
           try {
             await this.uploadRecordingToServer(blob, meta, `${baseName}.webm`)
             this.lastUploadStatus = 'uploaded ✅'
@@ -325,7 +353,6 @@ export default {
       try {
         this.recorder.start()
         this.isRecording = true
-        console.log('[REC] Started recording on camera, mime:', this.recorder.mimeType)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
       }
@@ -381,8 +408,6 @@ export default {
       })
 
       const uploadUrl = `${proto}//${host}:${port}/api/upload-recording?${params.toString()}`
-
-      console.log('[UPLOAD] Uploading to', uploadUrl)
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
@@ -449,6 +474,22 @@ video {
   object-fit: cover;
 }
 
+/* LIVE INDICATOR */
+.live-indicator {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  background: #dc2626;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 14px;
+  color: white;
+  z-index: 9999;
+  letter-spacing: 1px;
+  box-shadow: 0 0 12px rgba(255,0,0,0.7);
+}
+
 .controls {
   display: flex;
   justify-content: center;
@@ -500,7 +541,7 @@ button:disabled {
 }
 
 .rec-timer {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New";
   font-size: 12px;
   color: #e5e7eb;
   align-self: center;

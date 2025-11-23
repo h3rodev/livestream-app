@@ -19,6 +19,7 @@
             id="previewVideo"
             ref="previewVideo"
             controls
+            autoplay
             muted
             playsinline
             webkit-playsinline
@@ -37,6 +38,7 @@
             id="liveVideo"
             ref="liveVideo"
             controls
+            autoplay
             muted
             playsinline
             webkit-playsinline
@@ -155,6 +157,7 @@
           >
             <video
               muted
+              autoplay
               playsinline
               webkit-playsinline
               :ref="'thumbVideo-' + index"
@@ -305,6 +308,22 @@ export default {
       const previewVideo = this.$refs.previewVideo
       previewVideo.srcObject = info.stream
       this.previewMeta = `Previewing ${cameraId}`
+
+      // Visually mark which slot is preview
+      this.cameraSlots.forEach((slot) => {
+        if (!slot.cameraId) return
+        if (slot.cameraId === this.currentLiveId) {
+          // Keep live slot as LIVE
+          slot.statusText = 'LIVE'
+          slot.statusClass = 'status-live'
+        } else if (slot.cameraId === this.currentPreviewId) {
+          // Preview but not live yet: show as online
+          if (slot.statusText === 'offline') {
+            slot.statusText = 'online'
+            slot.statusClass = 'status-online'
+          }
+        }
+      })
     },
 
     setLiveFromPreview() {
@@ -312,10 +331,43 @@ export default {
       const info = this.cameras[this.currentPreviewId]
       if (!info || !info.stream) return
 
+      const previousLiveId = this.currentLiveId
+
       this.currentLiveId = this.currentPreviewId
       const liveVideo = this.$refs.liveVideo
       liveVideo.srcObject = info.stream
       this.liveMeta = `On Air: ${this.currentLiveId}`
+
+      // Update slot statuses: exactly one LIVE, others online/offline
+      this.cameraSlots.forEach((slot) => {
+        if (!slot.cameraId) {
+          slot.statusText = 'offline'
+          slot.statusClass = 'status-offline'
+          return
+        }
+        if (slot.cameraId === this.currentLiveId) {
+          slot.statusText = 'LIVE'
+          slot.statusClass = 'status-live'
+        } else {
+          // Connected but not live
+          slot.statusText = 'online'
+          slot.statusClass = 'status-online'
+        }
+      })
+
+      // Tell cameras which one is LIVE
+      if (this.socket && this.currentLiveId) {
+        this.socket.emit('live-state', {
+          cameraId: this.currentLiveId,
+          isLive: true,
+        })
+      }
+      if (this.socket && previousLiveId && previousLiveId !== this.currentLiveId) {
+        this.socket.emit('live-state', {
+          cameraId: previousLiveId,
+          isLive: false,
+        })
+      }
     },
 
     // --- AUDIO MIXER LOGIC ---
@@ -405,14 +457,29 @@ export default {
 
     toggleRecording(cameraId) {
       if (!cameraId) return
-      if (this.isRecording(cameraId)) {
+
+      const wasRecording = this.isRecording(cameraId)
+
+      if (wasRecording) {
         this.stopRecording(cameraId)
+        if (this.socket) {
+          this.socket.emit('record-control', {
+            cameraId,
+            action: 'stop',
+          })
+        }
       } else {
         this.startRecording(cameraId)
+        if (this.socket) {
+          this.socket.emit('record-control', {
+            cameraId,
+            action: 'start',
+          })
+        }
       }
     },
 
-        startRecording(cameraId) {
+    startRecording(cameraId) {
       const info = this.cameras[cameraId]
       if (!info || !info.stream) {
         console.warn('[REC] No stream for camera', cameraId)
@@ -494,18 +561,14 @@ export default {
         recState.isRecording = false
       }
 
-      // Start timer
       recState.timerId = setInterval(() => {
         recState.elapsedSeconds += 1
       }, 1000)
 
-      // Save state & start
       this.recordings[cameraId] = recState
 
       try {
-        // No timeslice: let the browser buffer and emit on stop
         recorder.start()
-        console.log('[REC] Started recording for', cameraId, 'mime:', recorder.mimeType)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
       }
@@ -543,39 +606,10 @@ export default {
       URL.revokeObjectURL(url)
     },
 
-
-    stopRecording(cameraId) {
-      const rec = this.recordings[cameraId]
-      if (!rec || !rec.isRecording || !rec.recorder) return
-
-      try {
-        rec.recorder.stop()
-      } catch (e) {
-        console.error('[REC] recorder.stop failed', e)
-      }
-
-      rec.isRecording = false
-      if (rec.timerId) {
-        clearInterval(rec.timerId)
-        rec.timerId = null
-      }
-    },
-
     makeRecordingBaseName(cameraId, dateObj) {
       const safeId = cameraId.replace(/[^a-zA-Z0-9_-]/g, '')
       const iso = dateObj.toISOString().replace(/[:.]/g, '-')
       return `cam-${safeId}-${iso}`
-    },
-
-    downloadBlob(blob, filename) {
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
     },
 
     // --- SOCKET / WEBRTC ---
@@ -628,7 +662,6 @@ export default {
             this.liveMeta = 'None on air'
           }
 
-          // If recording, stop & finalize
           if (this.isRecording(cameraId)) {
             this.stopRecording(cameraId)
           }
@@ -641,7 +674,6 @@ export default {
 
       this.socket.on('webrtc-offer', async ({ fromCameraId, sdp }) => {
         this.logStatus(`Received offer from camera ${fromCameraId}`)
-        console.log('[ADMIN] webrtc-offer from', fromCameraId, sdp)
 
         let info = this.cameras[fromCameraId]
         if (!info) {
@@ -670,9 +702,9 @@ export default {
         }
 
         pc.onconnectionstatechange = () => {
-          console.log('[ADMIN] PC state for', fromCameraId, '=', pc.connectionState)
           if (pc.connectionState === 'connected') {
-            this.setSlotState(info.slotIndex, 'live', 'status-live')
+            // Connected but NOT live yet → "online"
+            this.setSlotState(info.slotIndex, 'online', 'status-online')
             this.logStatus('Connected to one or more cameras.')
           } else if (
             pc.connectionState === 'disconnected' ||
@@ -683,7 +715,6 @@ export default {
         }
 
         pc.ontrack = (event) => {
-          console.log('[ADMIN] Remote track from', fromCameraId, event.streams, event.track)
           let stream = event.streams && event.streams[0]
 
           if (!stream) {
@@ -702,15 +733,12 @@ export default {
             thumbVideo.srcObject = stream
           }
 
-          // Attach audio into mixer if available
           this.ensureCameraAudio(fromCameraId, stream)
 
           if (!this.currentPreviewId) {
             this.setPreviewCamera(fromCameraId)
           }
-          if (!this.currentLiveId) {
-            this.setLiveFromPreview()
-          }
+          // No auto-live: only TAKE moves to LIVE
         }
 
         try {
@@ -980,21 +1008,36 @@ video {
   border-radius: 999px;
   border: 1px solid transparent;
 }
+
+/* offline */
 .status-offline {
   border-color: #4b5563;
   color: #9ca3af;
   background: rgba(75, 85, 99, 0.3);
 }
+
+/* connecting */
 .status-connecting {
   border-color: #f97316;
   color: #f97316;
   background: rgba(249, 115, 22, 0.12);
 }
+
+/* connected but not live */
+.status-online {
+  border-color: #3b82f6;
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.16);
+}
+
+/* LIVE on air */
 .status-live {
   border-color: #22c55e;
   color: #22c55e;
   background: rgba(34, 197, 94, 0.18);
 }
+
+/* RECORDING overlay */
 .status-recording {
   border-color: #ef4444;
   color: #ef4444;
@@ -1008,12 +1051,6 @@ video {
   border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
-}
-
-.camera-thumb-wrapper.video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .camera-thumb-overlay {
@@ -1070,7 +1107,7 @@ video {
 }
 
 .rec-timer {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
   font-size: 10px;
   color: #e5e7eb;
 }
