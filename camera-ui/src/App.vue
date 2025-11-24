@@ -2,7 +2,10 @@
   <div id="cam-root">
     <header>
       <h2>Camera Device</h2>
-      <div class="status">{{ status }}</div>
+      <div class="status">
+        {{ status }}
+        <span v-if="isLive" class="live-pill">LIVE</span>
+      </div>
     </header>
 
     <div class="video-box">
@@ -13,11 +16,6 @@
         autoplay
         muted
       ></video>
-    </div>
-
-    <!-- LIVE INDICATOR -->
-    <div v-if="isLive" class="live-indicator">
-      LIVE
     </div>
 
     <div class="controls">
@@ -47,7 +45,6 @@
       <div><strong>Resolution:</strong> {{ resolution }}</div>
       <div><strong>ICE Status:</strong> {{ iceStatus }}</div>
       <div><strong>Recording:</strong> {{ isRecording ? 'ON' : 'OFF' }}</div>
-      <div><strong>LIVE:</strong> {{ isLive ? 'YES' : 'NO' }}</div>
       <div><strong>Last upload:</strong> {{ lastUploadStatus }}</div>
     </div>
   </div>
@@ -81,7 +78,7 @@ export default {
 
       lastUploadStatus: '—',
 
-      // LIVE STATE FROM ADMIN
+      // Live state from admin
       isLive: false,
     }
   },
@@ -131,32 +128,23 @@ export default {
         try {
           await this.pc.addIceCandidate(new RTCIceCandidate(candidate))
         } catch (err) {
-          console.error('[CAMERA] Error adding ICE candidate:', err)
+          console.error('[CAMERA] Error adding ICE candidate from admin:', err)
         }
       })
 
-      // LIVE STATE RECEIVED FROM ADMIN
-      this.socket.on('live-state', ({ cameraId, isLive }) => {
-        if (cameraId === this.cameraId) {
-          this.isLive = !!isLive
-        } else {
-          // Another camera went live => ensure this is not marked live
-          this.isLive = false
-        }
+      // LIVE state from admin
+      this.socket.on('live-state', ({ isLive }) => {
+        this.isLive = !!isLive
       })
 
-      // ADMIN TRIGGERS CAMERA RECORDING
-      this.socket.on('record-control', ({ cameraId, action }) => {
-        if (cameraId !== this.cameraId) return
+      // Record control from admin (start/stop recording on this device)
+      this.socket.on('record-control', ({ action }) => {
+        if (!action) return
 
-        if (action === 'start') {
-          if (!this.isRecording) {
-            this.startRecording()
-          }
-        } else if (action === 'stop') {
-          if (this.isRecording) {
-            this.stopRecording()
-          }
+        if (action === 'start' && !this.isRecording) {
+          this.startRecording(true) // skip emitting record-state back (admin already knows)
+        } else if (action === 'stop' && this.isRecording) {
+          this.stopRecording(true)
         }
       })
     },
@@ -174,7 +162,8 @@ export default {
           audio: true,
         })
 
-        this.$refs.localVideo.srcObject = this.stream
+        const videoEl = this.$refs.localVideo
+        videoEl.srcObject = this.stream
 
         const vTrack = this.stream.getVideoTracks()[0]
         if (vTrack) {
@@ -210,6 +199,7 @@ export default {
 
       this.pc.oniceconnectionstatechange = () => {
         this.iceStatus = this.pc.iceConnectionState
+        console.log('[CAMERA] ICE state:', this.iceStatus)
       }
 
       this.stream.getTracks().forEach((t) => {
@@ -227,7 +217,7 @@ export default {
 
     stopCamera() {
       if (this.isRecording) {
-        this.stopRecording()
+        this.stopRecording(false) // also tell admin
       }
 
       if (this.stream) {
@@ -236,7 +226,7 @@ export default {
       if (this.pc) {
         try {
           this.pc.close()
-        } catch {}
+        } catch (e) {}
       }
 
       this.stream = null
@@ -245,6 +235,7 @@ export default {
       this.status = 'Stopped'
       this.iceStatus = 'waiting…'
       this.resolution = '---'
+      this.isLive = false
 
       const videoEl = this.$refs.localVideo
       if (videoEl && videoEl.srcObject) {
@@ -257,13 +248,14 @@ export default {
     toggleRecording() {
       if (!this.stream) return
       if (this.isRecording) {
-        this.stopRecording()
+        this.stopRecording(false) // user action → inform admin
       } else {
-        this.startRecording()
+        this.startRecording(false)
       }
     },
 
-    startRecording() {
+    // skipEmitToAdmin: true when recording was triggered by admin (no need to send record-state back)
+    startRecording(skipEmitToAdmin = false) {
       if (!this.stream) {
         console.warn('[REC] No stream available for recording')
         return
@@ -293,6 +285,7 @@ export default {
       this.recordStartedAt = new Date()
       this.recordElapsedSeconds = 0
       this.lastUploadStatus = 'recording…'
+      this.isRecording = true
 
       this.recorder.ondataavailable = (evt) => {
         if (evt.data && evt.data.size > 0) {
@@ -315,12 +308,15 @@ export default {
         }
 
         if (!this.recordChunks.length) {
+          console.warn('[REC] No data chunks recorded')
           this.lastUploadStatus = 'no data'
         } else {
           const mimeType = this.recorder.mimeType || 'video/webm'
           const blob = new Blob(this.recordChunks, { type: mimeType })
+
           const baseName = this.makeRecordingBaseName(startedAt)
 
+          // Auto-download locally
           this.downloadBlob(blob, `${baseName}.webm`)
 
           const meta = {
@@ -334,6 +330,7 @@ export default {
           })
           this.downloadBlob(metaBlob, `${baseName}.json`)
 
+          // Upload to server
           try {
             await this.uploadRecordingToServer(blob, meta, `${baseName}.webm`)
             this.lastUploadStatus = 'uploaded ✅'
@@ -352,13 +349,22 @@ export default {
 
       try {
         this.recorder.start()
-        this.isRecording = true
+        console.log('[REC] Started recording on camera, mime:', this.recorder.mimeType)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
+        this.isRecording = false
+      }
+
+      // Notify admin that camera recording started (if this was user-triggered)
+      if (!skipEmitToAdmin && this.socket && this.cameraId) {
+        this.socket.emit('record-state', {
+          cameraId: this.cameraId,
+          action: 'start',
+        })
       }
     },
 
-    stopRecording() {
+    stopRecording(skipEmitToAdmin = false) {
       if (!this.recorder || !this.isRecording) return
 
       try {
@@ -370,6 +376,14 @@ export default {
       if (this.recordTimerId) {
         clearInterval(this.recordTimerId)
         this.recordTimerId = null
+      }
+
+      // Notify admin that camera recording stopped (if this was user-triggered)
+      if (!skipEmitToAdmin && this.socket && this.cameraId) {
+        this.socket.emit('record-state', {
+          cameraId: this.cameraId,
+          action: 'stop',
+        })
       }
     },
 
@@ -408,6 +422,8 @@ export default {
       })
 
       const uploadUrl = `${proto}//${host}:${port}/api/upload-recording?${params.toString()}`
+
+      console.log('[UPLOAD] Uploading to', uploadUrl)
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
@@ -457,6 +473,18 @@ header h2 {
   margin-top: 4px;
 }
 
+.live-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.25);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
 .video-box {
   width: 100%;
   aspect-ratio: 9 / 16;
@@ -472,22 +500,6 @@ video {
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-
-/* LIVE INDICATOR */
-.live-indicator {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  background: #dc2626;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-weight: bold;
-  font-size: 14px;
-  color: white;
-  z-index: 9999;
-  letter-spacing: 1px;
-  box-shadow: 0 0 12px rgba(255,0,0,0.7);
 }
 
 .controls {
@@ -541,7 +553,7 @@ button:disabled {
 }
 
 .rec-timer {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New";
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 12px;
   color: #e5e7eb;
   align-self: center;

@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.3.0 – Admin–Camera Recording Sync & Audio Mixer Fix
+**Date:** 2025-11-24
+
+### Added
+- Bi-directional recording control between Admin and Camera:
+  - Admin can start/stop per-camera recordings from the V1–V5 slots.
+  - Camera can start/stop recording locally and the Admin UI mirrors the recording state.
+- `live-state` signalling:
+  - Admin designates a single camera as LIVE.
+  - Only the selected camera shows a LIVE indicator on the Camera UI.
+- Automatic upload of camera recordings to the server via `/api/upload-recording` with per-camera folders and JSON metadata.
+
+### Changed
+- Audio mixer behaviour on Admin:
+  - When the mixer is enabled, all currently connected camera streams are now attached automatically.
+  - Each active camera appears as a separate audio source with its own gain control.
+- Admin slot status logic:
+  - Explicit separation of `offline`, `connecting`, `online`, and `LIVE` states.
+  - Exactly one camera at a time is marked as `LIVE`, all other connected cameras show as `online`.
+
+### Fixed
+- Recording state desynchronisation:
+  - Stopping a recording on Camera now correctly stops the corresponding recording on Admin (and vice versa) without event loops.
+- Inconsistent audio source list:
+  - Audio panel no longer misses already-connected cameras when enabling the mixer after streams are live.
+
+### Files touched (high-level)
+- `server/src/index.js`
+  - Added `live-state`, `record-control`, and `record-state` events.
+  - Centralised upload handling for camera recordings.
+- `admin-ui/src/App.vue`
+  - Integrated audio mixer attachment for existing camera streams.
+  - Implemented synced recording logic and refined slot status handling.
+- `camera-ui/src/App.vue`
+  - Added LIVE indicator and recording control wiring from Admin.
+  - Implemented auto-upload and local download of camera recordings.
+
+
+
 All notable changes to Livestream App will be documented here.
 
 ### 🏷 Release v0.1.5 — Multi-Camera Admin Layout Upgrade

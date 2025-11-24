@@ -1,3 +1,4 @@
+
 <template>
   <div id="app-root">
     <header>
@@ -309,15 +310,13 @@ export default {
       previewVideo.srcObject = info.stream
       this.previewMeta = `Previewing ${cameraId}`
 
-      // Visually mark which slot is preview
+      // Keep LIVE slot as LIVE, preview as online
       this.cameraSlots.forEach((slot) => {
         if (!slot.cameraId) return
         if (slot.cameraId === this.currentLiveId) {
-          // Keep live slot as LIVE
           slot.statusText = 'LIVE'
           slot.statusClass = 'status-live'
         } else if (slot.cameraId === this.currentPreviewId) {
-          // Preview but not live yet: show as online
           if (slot.statusText === 'offline') {
             slot.statusText = 'online'
             slot.statusClass = 'status-online'
@@ -349,13 +348,12 @@ export default {
           slot.statusText = 'LIVE'
           slot.statusClass = 'status-live'
         } else {
-          // Connected but not live
           slot.statusText = 'online'
           slot.statusClass = 'status-online'
         }
       })
 
-      // Tell cameras which one is LIVE
+      // Tell cameras who is LIVE
       if (this.socket && this.currentLiveId) {
         this.socket.emit('live-state', {
           cameraId: this.currentLiveId,
@@ -382,7 +380,15 @@ export default {
       } else if (this.audioContext.state === 'suspended') {
         this.audioContext.resume()
       }
+
       this.audioReady = true
+
+      // Attach all existing camera streams when enabling mixer
+      Object.entries(this.cameras).forEach(([cameraId, info]) => {
+        if (info.stream) {
+          this.ensureCameraAudio(cameraId, info.stream)
+        }
+      })
     },
 
     ensureCameraAudio(cameraId, stream) {
@@ -461,25 +467,13 @@ export default {
       const wasRecording = this.isRecording(cameraId)
 
       if (wasRecording) {
-        this.stopRecording(cameraId)
-        if (this.socket) {
-          this.socket.emit('record-control', {
-            cameraId,
-            action: 'stop',
-          })
-        }
+        this.stopRecording(cameraId, { skipEmit: false })
       } else {
-        this.startRecording(cameraId)
-        if (this.socket) {
-          this.socket.emit('record-control', {
-            cameraId,
-            action: 'start',
-          })
-        }
+        this.startRecording(cameraId, { skipEmit: false })
       }
     },
 
-    startRecording(cameraId) {
+    startRecording(cameraId, { skipEmit = false } = {}) {
       const info = this.cameras[cameraId]
       if (!info || !info.stream) {
         console.warn('[REC] No stream for camera', cameraId)
@@ -569,12 +563,21 @@ export default {
 
       try {
         recorder.start()
+        console.log('[REC] Admin started recording for', cameraId)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
       }
+
+      // Also tell camera to start recording if this came from admin UI
+      if (!skipEmit && this.socket) {
+        this.socket.emit('record-control', {
+          cameraId,
+          action: 'start',
+        })
+      }
     },
 
-    stopRecording(cameraId) {
+    stopRecording(cameraId, { skipEmit = false } = {}) {
       const rec = this.recordings[cameraId]
       if (!rec || !rec.isRecording || !rec.recorder) return
 
@@ -588,6 +591,14 @@ export default {
       if (rec.timerId) {
         clearInterval(rec.timerId)
         rec.timerId = null
+      }
+
+      // Also tell camera to stop recording if this came from admin UI
+      if (!skipEmit && this.socket) {
+        this.socket.emit('record-control', {
+          cameraId,
+          action: 'stop',
+        })
       }
     },
 
@@ -663,7 +674,7 @@ export default {
           }
 
           if (this.isRecording(cameraId)) {
-            this.stopRecording(cameraId)
+            this.stopRecording(cameraId, { skipEmit: true })
           }
 
           this.teardownCameraAudio(cameraId)
@@ -738,7 +749,7 @@ export default {
           if (!this.currentPreviewId) {
             this.setPreviewCamera(fromCameraId)
           }
-          // No auto-live: only TAKE moves to LIVE
+          // Live is set only via TAKE
         }
 
         try {
@@ -766,6 +777,21 @@ export default {
           await info.pc.addIceCandidate(new RTCIceCandidate(candidate))
         } catch (err) {
           console.error('[ADMIN] Error adding ICE candidate from', fromId, err)
+        }
+      })
+
+      // Mirror recording state when camera starts/stops on its side
+      this.socket.on('record-state', ({ cameraId, action }) => {
+        if (!cameraId || !action) return
+
+        if (action === 'start') {
+          if (!this.isRecording(cameraId)) {
+            this.startRecording(cameraId, { skipEmit: true })
+          }
+        } else if (action === 'stop') {
+          if (this.isRecording(cameraId)) {
+            this.stopRecording(cameraId, { skipEmit: true })
+          }
         }
       })
     },

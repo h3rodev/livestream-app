@@ -16,11 +16,13 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*')
   res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.header('Access-Control-Allow-Headers', 'Content-Type')
-  if (req.method === 'OPTIONS') return res.sendStatus(200)
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200)
+  }
   next()
 })
 
-// --- Static files (optional) ---
+// --- Static files ---
 const publicDir = path.join(__dirname, '..', 'public')
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir))
@@ -36,7 +38,8 @@ app.post('/api/upload-recording', (req, res) => {
     filename,
   } = req.query
 
-  const safeCameraId = String(cameraId).replace(/[^a-zA-Z0-9_-]/g, '') || 'unknown'
+  const safeCameraId =
+    String(cameraId).replace(/[^a-zA-Z0-9_-]/g, '') || 'unknown'
   const safeFilename =
     (filename && String(filename).replace(/[^a-zA-Z0-9_.-]/g, '')) ||
     `rec-${Date.now()}.webm`
@@ -68,7 +71,9 @@ app.post('/api/upload-recording', (req, res) => {
     }
 
     fs.writeFile(metaPath, JSON.stringify(meta, null, 2), (err) => {
-      if (err) console.error('[UPLOAD] Failed to write meta file', err)
+      if (err) {
+        console.error('[UPLOAD] Failed to write meta file', err)
+      }
     })
 
     console.log(
@@ -108,7 +113,7 @@ const io = new SocketIOServer(server, {
   },
 })
 
-// --- In-memory tracking of admins and cameras ---
+// --- In-memory tracking ---
 const admins = new Set()
 const cameras = new Map() // socketId -> { role: 'camera' }
 
@@ -121,9 +126,11 @@ io.on('connection', (socket) => {
       admins.add(socket.id)
       socket.emit(
         'info',
-        `Joined as admin. Current cameras: ${Array.from(cameras.keys()).join(', ')}`,
+        `Joined as admin. Current cameras: ${Array.from(cameras.keys()).join(
+          ', ',
+        )}`,
       )
-      // Send currently known cameras
+      // Inform new admin of existing cameras
       cameras.forEach((_info, camId) => {
         socket.emit('camera-joined', { cameraId: camId })
       })
@@ -138,7 +145,7 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Offer from camera → admin(s)
+  // Offer from camera → admins
   socket.on('webrtc-offer', ({ fromCameraId, sdp }) => {
     if (!fromCameraId || !sdp) return
     console.log('Offer from camera', fromCameraId, 'to admins')
@@ -158,23 +165,33 @@ io.on('connection', (socket) => {
   socket.on('webrtc-ice-candidate', ({ targetId, candidate }) => {
     if (!targetId || !candidate) return
     console.log('ICE candidate from', socket.id, 'to', targetId)
-    io.to(targetId).emit('webrtc-ice-candidate', { fromId: socket.id, candidate })
+    io.to(targetId).emit('webrtc-ice-candidate', {
+      fromId: socket.id,
+      candidate,
+    })
   })
 
-  // LIVE STATE from admin → camera
+  // LIVE state: admin → camera
   socket.on('live-state', ({ cameraId, isLive }) => {
-    console.log('[SERVER] live-state → camera', cameraId, 'isLive:', isLive)
-    if (cameraId) {
-      io.to(cameraId).emit('live-state', { cameraId, isLive })
-    }
+    if (!cameraId) return
+    console.log('live-state from admin', socket.id, 'to camera', cameraId, 'isLive=', isLive)
+    io.to(cameraId).emit('live-state', { isLive: !!isLive })
   })
 
-  // RECORD CONTROL from admin → camera
+  // Record control: admin → camera (start/stop)
   socket.on('record-control', ({ cameraId, action }) => {
-    console.log('[SERVER] record-control → camera', cameraId, 'action:', action)
-    if (cameraId && action) {
-      io.to(cameraId).emit('record-control', { cameraId, action })
-    }
+    if (!cameraId || !action) return
+    console.log('record-control from', socket.id, 'to camera', cameraId, 'action=', action)
+    io.to(cameraId).emit('record-control', { action })
+  })
+
+  // Record state: camera → admins (mirror on admin UI)
+  socket.on('record-state', ({ cameraId, action }) => {
+    if (!cameraId || !action) return
+    console.log('record-state from camera', cameraId, 'action=', action)
+    admins.forEach((adminId) => {
+      io.to(adminId).emit('record-state', { cameraId, action })
+    })
   })
 
   socket.on('disconnect', () => {
