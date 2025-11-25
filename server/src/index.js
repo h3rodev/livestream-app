@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename)
 
 const app = express()
 
-// --- Basic CORS ---
+// --- Basic CORS for fetch() from Vite dev servers / LAN ---
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*')
   res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
@@ -22,13 +22,13 @@ app.use((req, res, next) => {
   next()
 })
 
-// --- Static files ---
+// --- Static files (if you use /public) ---
 const publicDir = path.join(__dirname, '..', 'public')
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir))
 }
 
-// --- API: Upload recording ---
+// --- API: Upload recording (raw binary body) ---
 app.post('/api/upload-recording', (req, res) => {
   const {
     cameraId = 'unknown',
@@ -38,8 +38,7 @@ app.post('/api/upload-recording', (req, res) => {
     filename,
   } = req.query
 
-  const safeCameraId =
-    String(cameraId).replace(/[^a-zA-Z0-9_-]/g, '') || 'unknown'
+  const safeCameraId = String(cameraId).replace(/[^a-zA-Z0-9_-]/g, '') || 'unknown'
   const safeFilename =
     (filename && String(filename).replace(/[^a-zA-Z0-9_.-]/g, '')) ||
     `rec-${Date.now()}.webm`
@@ -58,6 +57,7 @@ app.post('/api/upload-recording', (req, res) => {
   const metaPath = videoPath.replace(/\.webm$/i, '.json')
 
   const writeStream = fs.createWriteStream(videoPath)
+
   req.pipe(writeStream)
 
   writeStream.on('finish', () => {
@@ -113,14 +113,15 @@ const io = new SocketIOServer(server, {
   },
 })
 
-// --- In-memory tracking ---
+// --- In-memory tracking of admins and cameras ---
+// cameras: socketId -> { role: 'camera', deviceId?: string }
 const admins = new Set()
-const cameras = new Map() // socketId -> { role: 'camera' }
+const cameras = new Map()
 
 io.on('connection', (socket) => {
   console.log('Socket connected:', socket.id)
 
-  socket.on('join', ({ role }) => {
+  socket.on('join', ({ role, deviceId }) => {
     if (role === 'admin') {
       console.log('Socket', socket.id, 'joined as admin')
       admins.add(socket.id)
@@ -130,22 +131,37 @@ io.on('connection', (socket) => {
           ', ',
         )}`,
       )
-      // Inform new admin of existing cameras
-      cameras.forEach((_info, camId) => {
-        socket.emit('camera-joined', { cameraId: camId })
+      // Send currently known cameras with deviceId
+      cameras.forEach((info, camId) => {
+        socket.emit('camera-joined', {
+          cameraId: camId,
+          deviceId: info.deviceId || camId,
+        })
       })
     } else if (role === 'camera') {
-      console.log('Socket', socket.id, 'joined as camera')
-      cameras.set(socket.id, { role: 'camera' })
+      const camDeviceId =
+        typeof deviceId === 'string' && deviceId.trim()
+          ? deviceId.trim()
+          : socket.id
+      console.log('Socket', socket.id, 'joined as camera, deviceId:', camDeviceId)
+
+      cameras.set(socket.id, {
+        role: 'camera',
+        deviceId: camDeviceId,
+      })
+
       admins.forEach((adminId) => {
-        io.to(adminId).emit('camera-joined', { cameraId: socket.id })
+        io.to(adminId).emit('camera-joined', {
+          cameraId: socket.id,
+          deviceId: camDeviceId,
+        })
       })
     } else {
       console.log('Socket', socket.id, 'joined with unknown role:', role)
     }
   })
 
-  // Offer from camera → admins
+  // Offer from camera → admin(s)
   socket.on('webrtc-offer', ({ fromCameraId, sdp }) => {
     if (!fromCameraId || !sdp) return
     console.log('Offer from camera', fromCameraId, 'to admins')
@@ -165,33 +181,7 @@ io.on('connection', (socket) => {
   socket.on('webrtc-ice-candidate', ({ targetId, candidate }) => {
     if (!targetId || !candidate) return
     console.log('ICE candidate from', socket.id, 'to', targetId)
-    io.to(targetId).emit('webrtc-ice-candidate', {
-      fromId: socket.id,
-      candidate,
-    })
-  })
-
-  // LIVE state: admin → camera
-  socket.on('live-state', ({ cameraId, isLive }) => {
-    if (!cameraId) return
-    console.log('live-state from admin', socket.id, 'to camera', cameraId, 'isLive=', isLive)
-    io.to(cameraId).emit('live-state', { isLive: !!isLive })
-  })
-
-  // Record control: admin → camera (start/stop)
-  socket.on('record-control', ({ cameraId, action }) => {
-    if (!cameraId || !action) return
-    console.log('record-control from', socket.id, 'to camera', cameraId, 'action=', action)
-    io.to(cameraId).emit('record-control', { action })
-  })
-
-  // Record state: camera → admins (mirror on admin UI)
-  socket.on('record-state', ({ cameraId, action }) => {
-    if (!cameraId || !action) return
-    console.log('record-state from camera', cameraId, 'action=', action)
-    admins.forEach((adminId) => {
-      io.to(adminId).emit('record-state', { cameraId, action })
-    })
+    io.to(targetId).emit('webrtc-ice-candidate', { fromId: socket.id, candidate })
   })
 
   socket.on('disconnect', () => {

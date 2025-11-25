@@ -2,10 +2,7 @@
   <div id="cam-root">
     <header>
       <h2>Camera Device</h2>
-      <div class="status">
-        {{ status }}
-        <span v-if="isLive" class="live-pill">LIVE</span>
-      </div>
+      <div class="status">{{ status }}</div>
     </header>
 
     <div class="video-box">
@@ -42,6 +39,7 @@
 
     <div class="debug">
       <div><strong>Camera ID:</strong> {{ cameraId || '—' }}</div>
+      <div><strong>Device ID:</strong> {{ deviceId || '—' }}</div>
       <div><strong>Resolution:</strong> {{ resolution }}</div>
       <div><strong>ICE Status:</strong> {{ iceStatus }}</div>
       <div><strong>Recording:</strong> {{ isRecording ? 'ON' : 'OFF' }}</div>
@@ -60,6 +58,7 @@ export default {
     return {
       status: 'Idle',
       cameraId: null,
+      deviceId: null,   // persistent per-physical device
       iceStatus: 'waiting…',
       resolution: '---',
 
@@ -77,9 +76,6 @@ export default {
       recordElapsedSeconds: 0,
 
       lastUploadStatus: '—',
-
-      // Live state from admin
-      isLive: false,
     }
   },
 
@@ -94,10 +90,34 @@ export default {
   },
 
   mounted() {
+    this.ensureDeviceId()
     this.initSocket()
   },
 
   methods: {
+    ensureDeviceId() {
+      const key = 'mplapp_camera_device_id_v1'
+      try {
+        let id = window.localStorage.getItem(key)
+        if (!id) {
+          id =
+            'dev-' +
+            Math.random().toString(36).slice(2) +
+            '-' +
+            Date.now().toString(36)
+          window.localStorage.setItem(key, id)
+        }
+        this.deviceId = id
+      } catch (e) {
+        console.warn('[CAMERA] Failed to use localStorage for deviceId', e)
+        this.deviceId =
+          'dev-' +
+          Math.random().toString(36).slice(2) +
+          '-' +
+          Date.now().toString(36)
+      }
+    },
+
     initSocket() {
       const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
       console.log('[CAMERA] Connecting to signaling:', signalingUrl)
@@ -109,7 +129,10 @@ export default {
       this.socket.on('connect', () => {
         this.cameraId = this.socket.id
         this.status = 'Connected to signaling server'
-        this.socket.emit('join', { role: 'camera' })
+        this.socket.emit('join', {
+          role: 'camera',
+          deviceId: this.deviceId,
+        })
       })
 
       this.socket.on('webrtc-answer', async ({ sdp }) => {
@@ -129,22 +152,6 @@ export default {
           await this.pc.addIceCandidate(new RTCIceCandidate(candidate))
         } catch (err) {
           console.error('[CAMERA] Error adding ICE candidate from admin:', err)
-        }
-      })
-
-      // LIVE state from admin
-      this.socket.on('live-state', ({ isLive }) => {
-        this.isLive = !!isLive
-      })
-
-      // Record control from admin (start/stop recording on this device)
-      this.socket.on('record-control', ({ action }) => {
-        if (!action) return
-
-        if (action === 'start' && !this.isRecording) {
-          this.startRecording(true) // skip emitting record-state back (admin already knows)
-        } else if (action === 'stop' && this.isRecording) {
-          this.stopRecording(true)
         }
       })
     },
@@ -217,7 +224,7 @@ export default {
 
     stopCamera() {
       if (this.isRecording) {
-        this.stopRecording(false) // also tell admin
+        this.stopRecording()
       }
 
       if (this.stream) {
@@ -235,7 +242,6 @@ export default {
       this.status = 'Stopped'
       this.iceStatus = 'waiting…'
       this.resolution = '---'
-      this.isLive = false
 
       const videoEl = this.$refs.localVideo
       if (videoEl && videoEl.srcObject) {
@@ -248,14 +254,13 @@ export default {
     toggleRecording() {
       if (!this.stream) return
       if (this.isRecording) {
-        this.stopRecording(false) // user action → inform admin
+        this.stopRecording()
       } else {
-        this.startRecording(false)
+        this.startRecording()
       }
     },
 
-    // skipEmitToAdmin: true when recording was triggered by admin (no need to send record-state back)
-    startRecording(skipEmitToAdmin = false) {
+    startRecording() {
       if (!this.stream) {
         console.warn('[REC] No stream available for recording')
         return
@@ -285,7 +290,6 @@ export default {
       this.recordStartedAt = new Date()
       this.recordElapsedSeconds = 0
       this.lastUploadStatus = 'recording…'
-      this.isRecording = true
 
       this.recorder.ondataavailable = (evt) => {
         if (evt.data && evt.data.size > 0) {
@@ -316,7 +320,7 @@ export default {
 
           const baseName = this.makeRecordingBaseName(startedAt)
 
-          // Auto-download locally
+          // Local download (optional)
           this.downloadBlob(blob, `${baseName}.webm`)
 
           const meta = {
@@ -349,22 +353,14 @@ export default {
 
       try {
         this.recorder.start()
+        this.isRecording = true
         console.log('[REC] Started recording on camera, mime:', this.recorder.mimeType)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
-        this.isRecording = false
-      }
-
-      // Notify admin that camera recording started (if this was user-triggered)
-      if (!skipEmitToAdmin && this.socket && this.cameraId) {
-        this.socket.emit('record-state', {
-          cameraId: this.cameraId,
-          action: 'start',
-        })
       }
     },
 
-    stopRecording(skipEmitToAdmin = false) {
+    stopRecording() {
       if (!this.recorder || !this.isRecording) return
 
       try {
@@ -376,14 +372,6 @@ export default {
       if (this.recordTimerId) {
         clearInterval(this.recordTimerId)
         this.recordTimerId = null
-      }
-
-      // Notify admin that camera recording stopped (if this was user-triggered)
-      if (!skipEmitToAdmin && this.socket && this.cameraId) {
-        this.socket.emit('record-state', {
-          cameraId: this.cameraId,
-          action: 'stop',
-        })
       }
     },
 
@@ -471,18 +459,6 @@ header h2 {
   font-size: 12px;
   color: #9ca3af;
   margin-top: 4px;
-}
-
-.live-pill {
-  display: inline-block;
-  margin-left: 8px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid #22c55e;
-  color: #bbf7d0;
-  background: rgba(34, 197, 94, 0.25);
-  font-size: 11px;
-  text-transform: uppercase;
 }
 
 .video-box {
