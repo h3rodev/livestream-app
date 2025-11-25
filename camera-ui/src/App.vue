@@ -2,7 +2,10 @@
   <div id="cam-root">
     <header>
       <h2>Camera Device</h2>
-      <div class="status">{{ status }}</div>
+      <div class="status-row">
+        <div class="status">{{ status }}</div>
+        <div v-if="isLive" class="live-pill">LIVE</div>
+      </div>
     </header>
 
     <div class="video-box">
@@ -39,7 +42,6 @@
 
     <div class="debug">
       <div><strong>Camera ID:</strong> {{ cameraId || '—' }}</div>
-      <div><strong>Device ID:</strong> {{ deviceId || '—' }}</div>
       <div><strong>Resolution:</strong> {{ resolution }}</div>
       <div><strong>ICE Status:</strong> {{ iceStatus }}</div>
       <div><strong>Recording:</strong> {{ isRecording ? 'ON' : 'OFF' }}</div>
@@ -58,7 +60,6 @@ export default {
     return {
       status: 'Idle',
       cameraId: null,
-      deviceId: null,   // persistent per-physical device
       iceStatus: 'waiting…',
       resolution: '---',
 
@@ -76,6 +77,9 @@ export default {
       recordElapsedSeconds: 0,
 
       lastUploadStatus: '—',
+
+      // Live indicator (from admin/scene)
+      isLive: false,
     }
   },
 
@@ -90,34 +94,10 @@ export default {
   },
 
   mounted() {
-    this.ensureDeviceId()
     this.initSocket()
   },
 
   methods: {
-    ensureDeviceId() {
-      const key = 'mplapp_camera_device_id_v1'
-      try {
-        let id = window.localStorage.getItem(key)
-        if (!id) {
-          id =
-            'dev-' +
-            Math.random().toString(36).slice(2) +
-            '-' +
-            Date.now().toString(36)
-          window.localStorage.setItem(key, id)
-        }
-        this.deviceId = id
-      } catch (e) {
-        console.warn('[CAMERA] Failed to use localStorage for deviceId', e)
-        this.deviceId =
-          'dev-' +
-          Math.random().toString(36).slice(2) +
-          '-' +
-          Date.now().toString(36)
-      }
-    },
-
     initSocket() {
       const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
       console.log('[CAMERA] Connecting to signaling:', signalingUrl)
@@ -129,10 +109,7 @@ export default {
       this.socket.on('connect', () => {
         this.cameraId = this.socket.id
         this.status = 'Connected to signaling server'
-        this.socket.emit('join', {
-          role: 'camera',
-          deviceId: this.deviceId,
-        })
+        this.socket.emit('join', { role: 'camera' })
       })
 
       this.socket.on('webrtc-answer', async ({ sdp }) => {
@@ -153,6 +130,22 @@ export default {
         } catch (err) {
           console.error('[CAMERA] Error adding ICE candidate from admin:', err)
         }
+      })
+
+      // --- Remote record control from Admin ---
+      this.socket.on('record-control', ({ cameraId, action }) => {
+        if (!this.cameraId || cameraId !== this.cameraId) return
+        if (action === 'start') {
+          if (!this.isRecording) this.startRecording()
+        } else if (action === 'stop') {
+          if (this.isRecording) this.stopRecording()
+        }
+      })
+
+      // --- Live state from Admin/Scenes ---
+      this.socket.on('live-state', ({ cameraId, isLive }) => {
+        if (!this.cameraId || cameraId !== this.cameraId) return
+        this.isLive = !!isLive
       })
     },
 
@@ -242,6 +235,7 @@ export default {
       this.status = 'Stopped'
       this.iceStatus = 'waiting…'
       this.resolution = '---'
+      this.isLive = false
 
       const videoEl = this.$refs.localVideo
       if (videoEl && videoEl.srcObject) {
@@ -274,7 +268,10 @@ export default {
           options = { mimeType: 'video/webm' }
         }
       } catch (e) {
-        console.warn('[REC] MediaRecorder.isTypeSupported check failed, using default', e)
+        console.warn(
+          '[REC] MediaRecorder.isTypeSupported check failed, using default',
+          e,
+        )
       }
 
       try {
@@ -290,6 +287,8 @@ export default {
       this.recordStartedAt = new Date()
       this.recordElapsedSeconds = 0
       this.lastUploadStatus = 'recording…'
+      this.isRecording = true
+      this.emitRecordState() // notify admins immediately
 
       this.recorder.ondataavailable = (evt) => {
         if (evt.data && evt.data.size > 0) {
@@ -320,7 +319,7 @@ export default {
 
           const baseName = this.makeRecordingBaseName(startedAt)
 
-          // Local download (optional)
+          // Local download
           this.downloadBlob(blob, `${baseName}.webm`)
 
           const meta = {
@@ -345,15 +344,16 @@ export default {
         }
 
         this.isRecording = false
+        this.emitRecordState() // final state to admins
       }
 
       this.recordTimerId = setInterval(() => {
         this.recordElapsedSeconds += 1
+        this.emitRecordState()
       }, 1000)
 
       try {
         this.recorder.start()
-        this.isRecording = true
         console.log('[REC] Started recording on camera, mime:', this.recorder.mimeType)
       } catch (e) {
         console.error('[REC] recorder.start failed', e)
@@ -373,10 +373,21 @@ export default {
         clearInterval(this.recordTimerId)
         this.recordTimerId = null
       }
+      // onstop handler will flip isRecording=false and emit state
+    },
+
+    emitRecordState() {
+      if (!this.socket || !this.cameraId) return
+      this.socket.emit('record-state', {
+        cameraId: this.cameraId,
+        isRecording: this.isRecording,
+        elapsedSeconds: this.recordElapsedSeconds,
+      })
     },
 
     makeRecordingBaseName(dateObj) {
-      const safeId = (this.cameraId || 'camera').replace(/[^a-zA-Z0-9_-]/g, '')
+      const safeId =
+        (this.cameraId || 'camera').replace(/[^a-zA-Z0-9_-]/g, '')
       const iso = dateObj.toISOString().replace(/[:.]/g, '-')
       return `cam-${safeId}-${iso}`
     },
@@ -455,10 +466,30 @@ header h2 {
   margin: 0;
   font-size: 20px;
 }
+
+.status-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
 .status {
   font-size: 12px;
   color: #9ca3af;
   margin-top: 4px;
+}
+
+.live-pill {
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #ef4444;
+  color: #fee2e2;
+  background: rgba(239, 68, 68, 0.2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .video-box {

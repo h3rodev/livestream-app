@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.2.0] – Scene System Milestone (2025-11-25)
+
+### Added
+- Full OBS-style Scene System:
+  - Create, rename, delete scenes
+  - Persistent scenes via `localStorage`
+  - Drag-and-resize scene elements (camera sources)
+  - Prevent adding the same camera source twice to a scene
+- Scene-based TAKE system that sends rendered output to Live
+- Live output now uses rendered Scene Canvas instead of raw camera feeds
+- 16:9 enforced aspect ratio for:
+  - Preview pane
+  - Scene Canvas
+  - Live pane
+  - V1–V5 camera thumbnails
+- Two-way recording sync between Admin and Camera:
+  - Admin triggers camera recording
+  - Camera sends back record-state (timer + status)
+- Two-way live-state sync:
+  - Only cameras used in Live scene show LIVE indicator
+  - Admin and Camera views stay in sync
+
+### Improved
+- Stabilised camera slot assignment (V1–V5):
+  - Slots persist across refresh
+  - Slots are correctly freed on camera disconnect
+  - Reconnecting cameras reuse the correct slot
+- Camera thumbnail video playback restored across refresh and scene changes
+- More resilient WebRTC handling and ICE reconnection logic
+- Cleaned UI padding and layout to support strict 16:9 workflow
+
+### Notes
+- This milestone establishes a stable baseline for:
+  - Multi-platform streaming output (RTMP / WebRTC)
+  - Program output recording
+  - Overlays (graphics, lower-thirds, logos)
+  - Scene presets (PiP, side-by-side, etc.)
+
+
+
 ## v0.3.0 – Admin–Camera Recording Sync & Audio Mixer Fix
 **Date:** 2025-11-24
 

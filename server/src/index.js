@@ -114,14 +114,13 @@ const io = new SocketIOServer(server, {
 })
 
 // --- In-memory tracking of admins and cameras ---
-// cameras: socketId -> { role: 'camera', deviceId?: string }
 const admins = new Set()
-const cameras = new Map()
+const cameras = new Map() // socketId -> { role: 'camera' }
 
 io.on('connection', (socket) => {
   console.log('Socket connected:', socket.id)
 
-  socket.on('join', ({ role, deviceId }) => {
+  socket.on('join', ({ role }) => {
     if (role === 'admin') {
       console.log('Socket', socket.id, 'joined as admin')
       admins.add(socket.id)
@@ -131,30 +130,15 @@ io.on('connection', (socket) => {
           ', ',
         )}`,
       )
-      // Send currently known cameras with deviceId
-      cameras.forEach((info, camId) => {
-        socket.emit('camera-joined', {
-          cameraId: camId,
-          deviceId: info.deviceId || camId,
-        })
+      // Send currently known cameras
+      cameras.forEach((_info, camId) => {
+        socket.emit('camera-joined', { cameraId: camId })
       })
     } else if (role === 'camera') {
-      const camDeviceId =
-        typeof deviceId === 'string' && deviceId.trim()
-          ? deviceId.trim()
-          : socket.id
-      console.log('Socket', socket.id, 'joined as camera, deviceId:', camDeviceId)
-
-      cameras.set(socket.id, {
-        role: 'camera',
-        deviceId: camDeviceId,
-      })
-
+      console.log('Socket', socket.id, 'joined as camera')
+      cameras.set(socket.id, { role: 'camera' })
       admins.forEach((adminId) => {
-        io.to(adminId).emit('camera-joined', {
-          cameraId: socket.id,
-          deviceId: camDeviceId,
-        })
+        io.to(adminId).emit('camera-joined', { cameraId: socket.id })
       })
     } else {
       console.log('Socket', socket.id, 'joined with unknown role:', role)
@@ -181,7 +165,42 @@ io.on('connection', (socket) => {
   socket.on('webrtc-ice-candidate', ({ targetId, candidate }) => {
     if (!targetId || !candidate) return
     console.log('ICE candidate from', socket.id, 'to', targetId)
-    io.to(targetId).emit('webrtc-ice-candidate', { fromId: socket.id, candidate })
+    io.to(targetId).emit('webrtc-ice-candidate', {
+      fromId: socket.id,
+      candidate,
+    })
+  })
+
+  // --- RECORDING CONTROL: admin → camera ---
+  socket.on('record-control', ({ cameraId, action }) => {
+    if (!cameraId || (action !== 'start' && action !== 'stop')) return
+    console.log('[RECORD] control from', socket.id, 'to', cameraId, 'action:', action)
+    io.to(cameraId).emit('record-control', { cameraId, action })
+  })
+
+  // --- RECORDING STATE: camera → admins ---
+  socket.on('record-state', ({ cameraId, isRecording, elapsedSeconds }) => {
+    if (!cameraId) return
+    const payload = {
+      cameraId,
+      isRecording: !!isRecording,
+      elapsedSeconds: elapsedSeconds || 0,
+    }
+    // Fan-out to all admins
+    admins.forEach((adminId) => {
+      io.to(adminId).emit('record-state', payload)
+    })
+  })
+
+  // --- LIVE CAMERAS: admin → cameras ---
+  socket.on('set-live-cameras', ({ liveCameraIds }) => {
+    if (!Array.isArray(liveCameraIds)) return
+    console.log('[LIVE] set-live-cameras', liveCameraIds)
+
+    cameras.forEach((_info, camId) => {
+      const isLive = liveCameraIds.includes(camId)
+      io.to(camId).emit('live-state', { cameraId: camId, isLive })
+    })
   })
 
   socket.on('disconnect', () => {
@@ -200,5 +219,7 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
-  console.log(`HTTPS signaling + API server listening on https://localhost:${PORT}`)
+  console.log(
+    `HTTPS signaling + API server listening on https://localhost:${PORT}`,
+  )
 })

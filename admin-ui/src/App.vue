@@ -8,31 +8,33 @@
     <div id="camera-summary">{{ cameraSummary }}</div>
 
     <div id="layout">
-      <!-- Preview pane -->
+      <!-- PREVIEW PANE (Scene Editor) -->
       <div id="preview-pane">
         <div class="pane-header">
           <div class="pane-title">Preview</div>
           <div class="pane-meta">{{ previewMeta }}</div>
         </div>
 
-        <!-- SCENES PANEL -->
+        <!-- Scene controls -->
         <div class="scene-panel">
           <div class="scene-list">
             <span class="scene-label">Scenes</span>
+
             <button
               v-for="scene in scenes"
               :key="scene.id"
               class="scene-btn"
-              :class="{ 'scene-btn-active': scene.id === currentSceneId }"
-              @click="activateScene(scene.id)"
+              :class="{ 'scene-btn-active': scene.id === activeSceneId }"
+              @click="selectScene(scene.id)"
             >
               <span class="scene-btn-name">{{ scene.name }}</span>
               <span class="scene-btn-summary">
                 {{ sceneSummary(scene) }}
               </span>
             </button>
+
             <button class="scene-btn scene-btn-add" @click="addScene">
-              + Scene
+              + New
             </button>
           </div>
 
@@ -40,90 +42,91 @@
             <span class="scene-tools-label">Add source:</span>
             <button
               v-for="slot in cameraSlots"
-              :key="slot.label + '-add'"
+              :key="slot.label"
               class="scene-source-btn"
-              :disabled="!slot.cameraId || !activeScene || sceneHasSlot(activeScene, slot.label)"
-              @click="addElementToActiveScene(slot.label)"
+              :disabled="!slot.cameraId || sceneHasSlot(activeScene, slotIndexFromLabel(slot.label))"
+              @click="addSlotToScene(slotIndexFromLabel(slot.label))"
             >
               {{ slot.label }}
             </button>
           </div>
         </div>
 
+        <!-- Scene canvas (Preview) -->
         <div class="pane-video-wrapper aspect-16-9">
-          <!-- When a scene is active, use scene canvas -->
-          <div
-            v-if="activeScene"
-            class="scene-canvas"
-            ref="sceneCanvas"
-          >
+          <div class="scene-canvas">
             <div
-              v-for="el in activeScene.elements"
-              :key="el.id"
-              class="scene-item"
-              :class="{ 'scene-item-selected': el.id === selectedElementId }"
-              :style="sceneItemStyle(el)"
-              @mousedown.stop="onSceneItemMouseDown(el, $event)"
+              v-if="previewSceneItems.length === 0"
+              class="scene-empty-hint"
             >
-              <!-- Remove element button -->
+              No sources in this scene yet.<br />
+              Use the buttons above to add V1–V5 to the layout.
+            </div>
+
+            <div
+              v-for="item in previewSceneItems"
+              :key="item.id"
+              class="scene-item"
+              :class="{ 'scene-item-selected': item.id === selectedSceneItemId }"
+              :style="sceneItemStyle(item)"
+              @mousedown.stop="startDrag(item, $event)"
+            >
+              <video
+                muted
+                playsinline
+                webkit-playsinline
+                autoplay
+                :ref="'sceneVideo-' + item.slotIndex"
+              ></video>
+
               <button
                 class="scene-item-remove"
-                @click.stop="removeElement(el.id)"
-                title="Remove source from scene"
+                @click.stop="removeSceneItem(item.id)"
               >
-                ×
+                ✕
               </button>
-
-              <video
-                playsinline
-                muted
-                autoplay
-                webkit-playsinline
-                :ref="'sceneVideo-' + el.id"
-              ></video>
 
               <div
                 class="resize-handle br"
-                @mousedown.stop="onResizeHandleDown(el, 'br', $event)"
+                @mousedown.stop="startResize(item, $event)"
               ></div>
             </div>
-
-            <div
-              v-if="!activeScene.elements.length"
-              class="scene-empty-hint"
-            >
-              Add sources (V1–V5) to this scene to start designing a layout.
-            </div>
           </div>
-
-          <!-- Fallback: old single-video preview when no scene selected -->
-          <video
-            v-else
-            id="previewVideo"
-            ref="previewVideo"
-            controls
-            muted
-            playsinline
-            webkit-playsinline
-          ></video>
         </div>
       </div>
 
-      <!-- Live pane -->
+      <!-- LIVE PANE -->
       <div id="live-pane">
         <div class="pane-header">
           <div class="pane-title">Live</div>
           <div class="pane-meta">{{ liveMeta }}</div>
         </div>
+
         <div class="pane-video-wrapper aspect-16-9">
-          <video
-            id="liveVideo"
-            ref="liveVideo"
-            controls
-            muted
-            playsinline
-            webkit-playsinline
-          ></video>
+          <div class="scene-canvas">
+            <div
+              v-if="liveSceneItems.length === 0"
+              class="scene-empty-hint"
+            >
+              No scene on air.<br />
+              Select a scene on the left and press TAKE.
+            </div>
+
+            <div
+              v-for="item in liveSceneItems"
+              :key="item.id"
+              class="scene-item"
+              :style="sceneItemStyle(item)"
+            >
+              <video
+                muted
+                playsinline
+                webkit-playsinline
+                autoplay
+                :ref="'liveSceneVideo-' + item.slotIndex"
+              ></video>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -134,7 +137,7 @@
           :disabled="!takeEnabled"
           @click="setLiveFromPreview"
         >
-          TAKE PREVIEW TO LIVE
+          TAKE PREVIEW SCENE TO LIVE
         </button>
       </div>
 
@@ -232,23 +235,20 @@
           <div
             class="camera-thumb-wrapper"
             :class="{
-              'active-preview': slot.cameraId === currentPreviewId,
-              'active-live': slot.cameraId === currentLiveId,
               'recording-border': isRecording(slot.cameraId)
             }"
-            @click="slot.cameraId && setPreviewCamera(slot.cameraId)"
+            @click="slot.cameraId && handleSlotClick(index)"
           >
             <video
               muted
-              autoplay
               playsinline
               webkit-playsinline
+              autoplay
               :ref="'thumbVideo-' + index"
             ></video>
             <div class="camera-thumb-overlay"></div>
           </div>
 
-          <!-- Recording controls per camera -->
           <div
             v-if="slot.cameraId"
             class="camera-rec-row"
@@ -271,11 +271,7 @@
           </div>
 
           <div class="camera-id-text">
-            {{
-              slot.cameraId
-                ? (cameras[slot.cameraId]?.deviceId || slot.cameraId)
-                : '—'
-            }}
+            {{ slot.cameraId || '—' }}
           </div>
         </div>
       </div>
@@ -286,9 +282,7 @@
 <script>
 import { io } from 'socket.io-client'
 
-const SCENES_STORAGE_KEY = 'mplapp_admin_scenes_v1'
-const SCENE_ID_STORAGE_KEY = 'mplapp_admin_current_scene_v1'
-const DEVICE_SLOT_STORAGE_KEY = 'mplapp_admin_device_slots_v1'
+const SCENE_STORAGE_KEY = 'mplapp_scenes_v2'
 
 export default {
   name: 'App',
@@ -297,7 +291,7 @@ export default {
     return {
       status: 'Connecting…',
       cameraSummary: 'No cameras connected.',
-      previewMeta: 'None selected',
+      previewMeta: 'Scene: None selected',
       liveMeta: 'None on air',
 
       cameraSlots: [
@@ -308,9 +302,8 @@ export default {
         { label: 'V5', cameraId: null, statusText: 'offline', statusClass: 'status-offline' }
       ],
 
-      cameras: {},          // cameraId -> { pc, stream, slotIndex, audioVolume, deviceId }
-      currentPreviewId: null,
-      currentLiveId: null,
+      cameras: {},          // cameraId -> { pc, stream, slotIndex, audioVolume }
+
       socket: null,
 
       // Audio mixer
@@ -321,40 +314,38 @@ export default {
       masterVolume: 1.0,
       masterVolumeSlider: 100,
 
-      // Recording state
-      recordings: {},       // cameraId -> { isRecording, startedAt, elapsedSeconds, chunks, recorder, timerId }
+      // Recording state mirrored from cameras
+      // cameraId -> { isRecording, elapsedSeconds }
+      recordings: {},
 
-      // Scenes
+      // Scene system
       scenes: [
         {
           id: 'scene-1',
           name: 'Scene 1',
-          elements: [],
+          items: [],
         },
       ],
-      currentSceneId: 'scene-1',
-      nextSceneIndex: 2,
-      selectedElementId: null,
+      activeSceneId: 'scene-1',
+      sceneCounter: 1,
+      selectedSceneItemId: null,
 
-      // deviceId -> slotIndex (persistent)
-      deviceSlotMap: {},
-      dragState: {
-        mode: null,
-        elementId: null,
-        handle: null,
-        startClientX: 0,
-        startClientY: 0,
-        startX: 0,
-        startY: 0,
-        startWidth: 0,
-        startHeight: 0,
+      // Live scene snapshot
+      liveScene: {
+        id: null,
+        name: '',
+        items: [],
       },
+
+      dragState: null,
+      resizeState: null,
     }
   },
 
   computed: {
     takeEnabled() {
-      return !!this.currentPreviewId
+      const scene = this.activeScene
+      return !!(scene && scene.items && scene.items.length)
     },
 
     audioSources() {
@@ -374,109 +365,81 @@ export default {
     },
 
     activeScene() {
-      return this.scenes.find(s => s.id === this.currentSceneId) || null
+      return this.scenes.find(s => s.id === this.activeSceneId) || null
+    },
+
+    previewSceneItems() {
+      return this.activeScene ? this.activeScene.items : []
+    },
+
+    liveSceneItems() {
+      return this.liveScene?.items || []
     },
   },
 
   watch: {
     scenes: {
-      deep: true,
       handler() {
         this.saveScenesToStorage()
       },
+      deep: true,
     },
-
-    currentSceneId() {
+    activeSceneId() {
       this.saveScenesToStorage()
+    },
+    liveScene: {
+      handler() {
+        this.saveScenesToStorage()
+      },
+      deep: true,
     },
   },
 
   mounted() {
     this.loadScenesFromStorage()
-    this.loadDeviceSlotsFromStorage()
     this.initSocket()
-    window.addEventListener('mousemove', this.onWindowMouseMove)
-    window.addEventListener('mouseup', this.onWindowMouseUp)
-  },
-
-  beforeUnmount() {
-    window.removeEventListener('mousemove', this.onWindowMouseMove)
-    window.removeEventListener('mouseup', this.onWindowMouseUp)
   },
 
   methods: {
-    // --- PERSISTENCE ---
+    /* ---- Storage ---- */
+    saveScenesToStorage() {
+      try {
+        const payload = {
+          scenes: this.scenes,
+          activeSceneId: this.activeSceneId,
+          liveScene: this.liveScene,
+          sceneCounter: this.sceneCounter,
+        }
+        window.localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(payload))
+      } catch (e) {
+        console.warn('[SCENES] Failed to save scenes', e)
+      }
+    },
 
     loadScenesFromStorage() {
       try {
-        const raw = window.localStorage.getItem(SCENES_STORAGE_KEY)
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            this.scenes = parsed.map((s, index) => ({
-              id: s.id || `scene-${index + 1}`,
-              name: s.name || `Scene ${index + 1}`,
-              elements: Array.isArray(s.elements) ? s.elements.map(el => ({
-                id: el.id || `el-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                slotLabel: el.slotLabel,
-                x: typeof el.x === 'number' ? el.x : 10,
-                y: typeof el.y === 'number' ? el.y : 10,
-                width: typeof el.width === 'number' ? el.width : 40,
-                height: typeof el.height === 'number' ? el.height : 40,
-                zIndex: typeof el.zIndex === 'number' ? el.zIndex : 1,
-              })) : [],
-            }))
-          }
-        }
-        const storedId = window.localStorage.getItem(SCENE_ID_STORAGE_KEY)
-        if (storedId && this.scenes.some(s => s.id === storedId)) {
-          this.currentSceneId = storedId
-        } else {
-          this.currentSceneId = this.scenes[0]?.id || 'scene-1'
-        }
-        this.nextSceneIndex = this.scenes.length + 1
-      } catch (e) {
-        console.warn('[SCENES] Failed to load from storage', e)
-      }
-    },
-
-    saveScenesToStorage() {
-      try {
-        const payload = JSON.stringify(this.scenes)
-        window.localStorage.setItem(SCENES_STORAGE_KEY, payload)
-        if (this.currentSceneId) {
-          window.localStorage.setItem(SCENE_ID_STORAGE_KEY, this.currentSceneId)
-        }
-      } catch (e) {
-        console.warn('[SCENES] Failed to save to storage', e)
-      }
-    },
-
-    loadDeviceSlotsFromStorage() {
-      try {
-        const raw = window.localStorage.getItem(DEVICE_SLOT_STORAGE_KEY)
+        const raw = window.localStorage.getItem(SCENE_STORAGE_KEY)
         if (!raw) return
         const parsed = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') {
-          this.deviceSlotMap = parsed
+        if (parsed && Array.isArray(parsed.scenes) && parsed.scenes.length) {
+          this.scenes = parsed.scenes
+          this.activeSceneId = parsed.activeSceneId || parsed.scenes[0].id
+          this.liveScene = parsed.liveScene || { id: null, name: '', items: [] }
+          this.sceneCounter = parsed.sceneCounter || parsed.scenes.length
+          const active = this.activeScene
+          this.previewMeta = active
+            ? `Scene: ${active.name}`
+            : 'Scene: None selected'
+          this.liveMeta = this.liveScene && this.liveScene.id
+            ? `On Air: ${this.liveScene.name}`
+            : 'None on air'
         }
       } catch (e) {
-        console.warn('[DEVICE-SLOTS] Failed to load from storage', e)
+        console.warn('[SCENES] Failed to load scenes', e)
       }
     },
 
-    saveDeviceSlotsToStorage() {
-      try {
-        window.localStorage.setItem(
-          DEVICE_SLOT_STORAGE_KEY,
-          JSON.stringify(this.deviceSlotMap),
-        )
-      } catch (e) {
-        console.warn('[DEVICE-SLOTS] Failed to save to storage', e)
-      }
-    },
-
-    // --- GENERAL STATUS ---
+    /* ---- Utility ---- */
     logStatus(msg) {
       console.log(msg)
       this.status = msg
@@ -489,10 +452,26 @@ export default {
         : `Cameras connected: ${count}`
     },
 
+    slotIndexFromLabel(label) {
+      return this.cameraSlots.findIndex(s => s.label === label)
+    },
+
+    getThumbVideo(slotIndex) {
+      const refName = 'thumbVideo-' + slotIndex
+      const ref = this.$refs[refName]
+      if (!ref) return null
+      return Array.isArray(ref) ? ref[0] : ref
+    },
+
+    setSlotState(slotIndex, text, className) {
+      const slot = this.cameraSlots[slotIndex]
+      if (!slot) return
+      slot.statusText = text
+      slot.statusClass = className
+    },
+
     assignSlotForCamera(cameraId) {
-      const existingIndex = this.cameraSlots.findIndex(
-        s => s.cameraId === cameraId,
-      )
+      const existingIndex = this.cameraSlots.findIndex(s => s.cameraId === cameraId)
       if (existingIndex !== -1) return existingIndex
 
       const freeIndex = this.cameraSlots.findIndex(s => !s.cameraId)
@@ -504,271 +483,241 @@ export default {
       return this.cameraSlots.length - 1
     },
 
-    setSlotState(slotIndex, text, className) {
-      const slot = this.cameraSlots[slotIndex]
-      if (!slot) return
-      slot.statusText = text
-      slot.statusClass = className
-    },
-
-    getThumbVideo(slotIndex) {
-      const refName = 'thumbVideo-' + slotIndex
-      const ref = this.$refs[refName]
-      if (!ref) return null
-      return Array.isArray(ref) ? ref[0] : ref
-    },
-
-    // --- PREVIEW / LIVE ---
-
-    setPreviewCamera(cameraId) {
-      const info = this.cameras[cameraId]
-      if (!info || !info.stream) return
-
-      this.currentPreviewId = cameraId
-
-      if (!this.activeScene) {
-        const previewVideo = this.$refs.previewVideo
-        if (previewVideo) {
-          previewVideo.srcObject = info.stream
-          const p = previewVideo.play()
-          if (p && p.catch) p.catch(() => {})
-        }
-      }
-
-      this.previewMeta = `Previewing ${cameraId}`
-    },
-
-    setLiveFromPreview() {
-      if (!this.currentPreviewId) return
-      const info = this.cameras[this.currentPreviewId]
-      if (!info || !info.stream) return
-
-      this.currentLiveId = this.currentPreviewId
-      const liveVideo = this.$refs.liveVideo
-      if (liveVideo) {
-        liveVideo.srcObject = info.stream
-        const p = liveVideo.play()
-        if (p && p.catch) p.catch(() => {})
-      }
-      this.liveMeta = `On Air: ${this.currentLiveId}`
-    },
-
-    // --- SCENES ---
-
+    /* ---- Scenes ---- */
     sceneSummary(scene) {
-      if (!scene || !scene.elements || scene.elements.length === 0) {
-        return 'Empty'
-      }
-      const labels = Array.from(new Set(scene.elements.map(e => e.slotLabel)))
-      return labels.join(', ')
+      if (!scene || !scene.items) return 'No sources'
+      if (!scene.items.length) return 'No sources'
+      const labels = scene.items
+        .map(i => this.cameraSlots[i.slotIndex]?.label)
+        .filter(Boolean)
+      return labels.length ? labels.join(' + ') : 'No sources'
     },
 
-    sceneHasSlot(scene, slotLabel) {
-      return scene && scene.elements.some(e => e.slotLabel === slotLabel)
+    sceneHasSlot(scene, slotIndex) {
+      if (!scene || !scene.items) return false
+      return scene.items.some(i => i.slotIndex === slotIndex)
     },
 
     addScene() {
-      const id = `scene-${this.nextSceneIndex++}`
-      this.scenes.push({
+      const id = `scene-${++this.sceneCounter}`
+      const scene = {
         id,
-        name: `Scene ${this.nextSceneIndex - 1}`,
-        elements: [],
-      })
-      this.currentSceneId = id
-      this.selectedElementId = null
-      this.$nextTick(() => {
-        this.refreshSceneVideoBindings()
-      })
-    },
-
-    activateScene(sceneId) {
-      this.currentSceneId = sceneId
-      this.selectedElementId = null
-
-      const scene = this.scenes.find(s => s.id === sceneId)
-      if (scene && scene.elements.length > 0) {
-        const primarySlot = scene.elements[0].slotLabel
-        const cameraId = this.getCameraIdForSlot(primarySlot)
-        if (cameraId) {
-          this.setPreviewCamera(cameraId)
-        }
+        name: `Scene ${this.sceneCounter}`,
+        items: [],
       }
-
-      this.$nextTick(() => {
-        this.refreshSceneVideoBindings()
-      })
+      this.scenes.push(scene)
+      this.activeSceneId = id
+      this.selectedSceneItemId = null
+      this.previewMeta = `Scene: ${scene.name}`
     },
 
-    addElementToActiveScene(slotLabel) {
+    selectScene(id) {
+      this.activeSceneId = id
+      const scene = this.activeScene
+      this.selectedSceneItemId = null
+      this.previewMeta = scene ? `Scene: ${scene.name}` : 'Scene: None selected'
+      this.attachSceneVideos()
+    },
+
+    addSlotToScene(slotIndex) {
       const scene = this.activeScene
       if (!scene) return
+      if (this.sceneHasSlot(scene, slotIndex)) return
 
-      const existing = scene.elements.find(e => e.slotLabel === slotLabel)
+      const id = `${scene.id}-item-${slotIndex}-${Date.now()}`
+      scene.items.push({
+        id,
+        slotIndex,
+        x: 0.05,
+        y: 0.05,
+        width: 0.9,
+        height: 0.9,
+      })
+      this.selectedSceneItemId = id
+      this.attachSceneVideos()
+    },
+
+    removeSceneItem(itemId) {
+      const scene = this.activeScene
+      if (!scene) return
+      scene.items = scene.items.filter(i => i.id !== itemId)
+      if (this.selectedSceneItemId === itemId) {
+        this.selectedSceneItemId = null
+      }
+      this.attachSceneVideos()
+    },
+
+    handleSlotClick(slotIndex) {
+      const scene = this.activeScene
+      if (!scene) return
+      const existing = scene.items.find(i => i.slotIndex === slotIndex)
       if (existing) {
-        this.selectedElementId = existing.id
+        this.selectedSceneItemId = existing.id
         return
       }
+      this.addSlotToScene(slotIndex)
+    },
 
-      const maxZ = scene.elements.reduce(
-        (acc, el) => Math.max(acc, el.zIndex ?? 1),
-        1,
+    sceneItemStyle(item) {
+      return {
+        left: (item.x * 100) + '%',
+        top: (item.y * 100) + '%',
+        width: (item.width * 100) + '%',
+        height: (item.height * 100) + '%',
+      }
+    },
+
+    /* ---- Drag / Resize ---- */
+    startDrag(item, event) {
+      this.selectedSceneItemId = item.id
+      const canvasEl = event.currentTarget.parentElement
+      const rect = canvasEl.getBoundingClientRect()
+      this.dragState = {
+        item,
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: item.x,
+        startTop: item.y,
+        canvasWidth: rect.width,
+        canvasHeight: rect.height,
+      }
+      window.addEventListener('mousemove', this.onDragMove)
+      window.addEventListener('mouseup', this.endDrag)
+    },
+
+    onDragMove(event) {
+      if (!this.dragState) return
+      const ds = this.dragState
+      const dx = event.clientX - ds.startX
+      const dy = event.clientY - ds.startY
+
+      const nx = ds.startLeft + dx / ds.canvasWidth
+      const ny = ds.startTop + dy / ds.canvasHeight
+
+      ds.item.x = Math.min(1 - ds.item.width, Math.max(0, nx))
+      ds.item.y = Math.min(1 - ds.item.height, Math.max(0, ny))
+    },
+
+    endDrag() {
+      this.dragState = null
+      window.removeEventListener('mousemove', this.onDragMove)
+      window.removeEventListener('mouseup', this.endDrag)
+    },
+
+    startResize(item, event) {
+      this.selectedSceneItemId = item.id
+      const canvasEl = event.currentTarget.parentElement.parentElement
+      const rect = canvasEl.getBoundingClientRect()
+      this.resizeState = {
+        item,
+        startX: event.clientX,
+        startY: event.clientY,
+        startWidth: item.width,
+        startHeight: item.height,
+        canvasWidth: rect.width,
+        canvasHeight: rect.height,
+      }
+      window.addEventListener('mousemove', this.onResizeMove)
+      window.addEventListener('mouseup', this.endResize)
+    },
+
+    onResizeMove(event) {
+      if (!this.resizeState) return
+      const rs = this.resizeState
+      const dx = event.clientX - rs.startX
+      const dy = event.clientY - rs.startY
+
+      const dw = dx / rs.canvasWidth
+      const dh = dy / rs.canvasHeight
+
+      let newWidth = rs.startWidth + dw
+      let newHeight = rs.startHeight + dh
+
+      newWidth = Math.max(0.1, Math.min(1 - rs.item.x, newWidth))
+      newHeight = Math.max(0.1, Math.min(1 - rs.item.y, newHeight))
+
+      rs.item.width = newWidth
+      rs.item.height = newHeight
+    },
+
+    endResize() {
+      this.resizeState = null
+      window.removeEventListener('mousemove', this.onResizeMove)
+      window.removeEventListener('mouseup', this.endResize)
+    },
+
+    /* ---- Attach streams into scene videos ---- */
+    attachSceneVideos() {
+      this.$nextTick(() => {
+        const attachForItems = (items, refPrefix) => {
+          items.forEach(item => {
+            const slot = this.cameraSlots[item.slotIndex]
+            if (!slot || !slot.cameraId) return
+            const camInfo = this.cameras[slot.cameraId]
+            if (!camInfo || !camInfo.stream) return
+
+            const ref = this.$refs[refPrefix + item.slotIndex]
+            if (!ref) return
+            const el = Array.isArray(ref) ? ref[0] : ref
+            if (el.srcObject !== camInfo.stream) {
+              el.srcObject = camInfo.stream
+              try {
+                el.play()
+              } catch (e) {
+                console.warn('[SCENE] play() failed', e)
+              }
+            }
+          })
+        }
+
+        attachForItems(this.previewSceneItems, 'sceneVideo-')
+        attachForItems(this.liveSceneItems, 'liveSceneVideo-')
+      })
+    },
+
+    /* ---- TAKE: Preview Scene → Live ---- */
+    setLiveFromPreview() {
+      const scene = this.activeScene
+      if (!scene || !scene.items || !scene.items.length) return
+
+      this.liveScene = {
+        id: scene.id,
+        name: scene.name,
+        items: scene.items.map(i => ({ ...i })),
+      }
+      this.liveMeta = `On Air: ${scene.name}`
+
+      // Determine which cameras are in the live scene
+      const liveCameraIds = Array.from(
+        new Set(
+          this.liveScene.items
+            .map(i => this.cameraSlots[i.slotIndex]?.cameraId)
+            .filter(Boolean),
+        ),
       )
 
-      const el = {
-        id: `el-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        slotLabel,
-        x: 10 + scene.elements.length * 5,
-        y: 10 + scene.elements.length * 5,
-        width: 40,
-        height: 40,
-        zIndex: maxZ + 1,
+      // Push live camera list to server so cameras can show LIVE pill
+      if (this.socket) {
+        this.socket.emit('set-live-cameras', { liveCameraIds })
       }
 
-      scene.elements.push(el)
-      this.selectedElementId = el.id
-
-      this.$nextTick(() => {
-        this.refreshSceneVideoBindings()
-      })
-    },
-
-    removeElement(elementId) {
-      const scene = this.activeScene
-      if (!scene) return
-      const idx = scene.elements.findIndex(e => e.id === elementId)
-      if (idx === -1) return
-
-      scene.elements.splice(idx, 1)
-
-      if (this.selectedElementId === elementId) {
-        this.selectedElementId = scene.elements[0]?.id || null
-      }
-
-      this.$nextTick(() => {
-        this.refreshSceneVideoBindings()
-      })
-    },
-
-    getCameraIdForSlot(slotLabel) {
-      const slot = this.cameraSlots.find(s => s.label === slotLabel)
-      return slot ? slot.cameraId : null
-    },
-
-    sceneItemStyle(el) {
-      return {
-        left: `${el.x}%`,
-        top: `${el.y}%`,
-        width: `${el.width}%`,
-        height: `${el.height}%`,
-        zIndex: el.zIndex ?? 1,
-      }
-    },
-
-    refreshSceneVideoBindings() {
-      const scene = this.activeScene
-      if (!scene) return
-      const canvas = this.$refs.sceneCanvas
-      if (!canvas) return
-
-      scene.elements.forEach((el) => {
-        const cameraId = this.getCameraIdForSlot(el.slotLabel)
-        if (!cameraId) return
-        const camInfo = this.cameras[cameraId]
-        if (!camInfo || !camInfo.stream) return
-
-        const refName = 'sceneVideo-' + el.id
-        const ref = this.$refs[refName]
-        const videoEl = Array.isArray(ref) ? ref?.[0] : ref
-        if (videoEl && videoEl.srcObject !== camInfo.stream) {
-          videoEl.srcObject = camInfo.stream
-          const p = videoEl.play()
-          if (p && p.catch) p.catch(() => {})
+      // Update status badges on V1–V5
+      this.cameraSlots.forEach((slot, index) => {
+        if (!slot.cameraId) {
+          this.setSlotState(index, 'offline', 'status-offline')
+          return
+        }
+        if (liveCameraIds.includes(slot.cameraId)) {
+          this.setSlotState(index, 'LIVE', 'status-live')
+        } else {
+          this.setSlotState(index, 'online', 'status-online')
         }
       })
+
+      this.attachSceneVideos()
     },
 
-    onSceneItemMouseDown(el, event) {
-      this.selectedElementId = el.id
-      const canvas = this.$refs.sceneCanvas
-      if (!canvas) return
-
-      this.dragState.mode = 'move'
-      this.dragState.elementId = el.id
-      this.dragState.handle = null
-      this.dragState.startClientX = event.clientX
-      this.dragState.startClientY = event.clientY
-      this.dragState.startX = el.x
-      this.dragState.startY = el.y
-
-      event.preventDefault()
-    },
-
-    onResizeHandleDown(el, handle, event) {
-      this.selectedElementId = el.id
-      const canvas = this.$refs.sceneCanvas
-      if (!canvas) return
-
-      this.dragState.mode = 'resize'
-      this.dragState.elementId = el.id
-      this.dragState.handle = handle
-      this.dragState.startClientX = event.clientX
-      this.dragState.startClientY = event.clientY
-      this.dragState.startWidth = el.width
-      this.dragState.startHeight = el.height
-      this.dragState.startX = el.x
-      this.dragState.startY = el.y
-
-      event.preventDefault()
-    },
-
-    onWindowMouseMove(event) {
-      if (!this.dragState.mode || !this.activeScene) return
-      const canvas = this.$refs.sceneCanvas
-      if (!canvas) return
-
-      const rect = canvas.getBoundingClientRect()
-      if (rect.width === 0 || rect.height === 0) return
-
-      const dxPx = event.clientX - this.dragState.startClientX
-      const dyPx = event.clientY - this.dragState.startClientY
-      const dxPct = (dxPx / rect.width) * 100
-      const dyPct = (dyPx / rect.height) * 100
-
-      const scene = this.activeScene
-      const el = scene.elements.find(e => e.id === this.dragState.elementId)
-      if (!el) return
-
-      const minSize = 10
-
-      if (this.dragState.mode === 'move') {
-        let newX = this.dragState.startX + dxPct
-        let newY = this.dragState.startY + dyPct
-
-        newX = Math.max(0, Math.min(100 - el.width, newX))
-        newY = Math.max(0, Math.min(100 - el.height, newY))
-
-        el.x = newX
-        el.y = newY
-      } else if (this.dragState.mode === 'resize' && this.dragState.handle === 'br') {
-        let newW = this.dragState.startWidth + dxPct
-        let newH = this.dragState.startHeight + dyPct
-
-        newW = Math.max(minSize, Math.min(100 - el.x, newW))
-        newH = Math.max(minSize, Math.min(100 - el.y, newH))
-
-        el.width = newW
-        el.height = newH
-      }
-    },
-
-    onWindowMouseUp() {
-      this.dragState.mode = null
-      this.dragState.elementId = null
-      this.dragState.handle = null
-    },
-
-    // --- AUDIO MIXER LOGIC ---
-
+    /* ---- AUDIO MIXER ---- */
     enableAudioMixer() {
       if (!this.audioContext) {
         const AC = window.AudioContext || window.webkitAudioContext
@@ -780,12 +729,7 @@ export default {
         this.audioContext.resume()
       }
       this.audioReady = true
-
-      Object.entries(this.cameras).forEach(([cameraId, info]) => {
-        if (info.stream) {
-          this.ensureCameraAudio(cameraId, info.stream)
-        }
-      })
+      this.attachSceneVideos()
     },
 
     ensureCameraAudio(cameraId, stream) {
@@ -842,8 +786,7 @@ export default {
       }
     },
 
-    // --- RECORDING LOGIC (Admin side only) ---
-
+    /* ---- Recording (mirrored from camera) ---- */
     isRecording(cameraId) {
       if (!cameraId) return false
       return !!(this.recordings[cameraId] && this.recordings[cameraId].isRecording)
@@ -859,150 +802,15 @@ export default {
     },
 
     toggleRecording(cameraId) {
-      if (!cameraId) return
+      if (!cameraId || !this.socket) return
       if (this.isRecording(cameraId)) {
-        this.stopRecording(cameraId)
+        this.socket.emit('record-control', { cameraId, action: 'stop' })
       } else {
-        this.startRecording(cameraId)
+        this.socket.emit('record-control', { cameraId, action: 'start' })
       }
     },
 
-    startRecording(cameraId) {
-      const info = this.cameras[cameraId]
-      if (!info || !info.stream) {
-        console.warn('[REC] No stream for camera', cameraId)
-        return
-      }
-
-      let options = undefined
-      try {
-        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
-          options = { mimeType: 'video/webm;codecs=vp8,opus' }
-        } else if (MediaRecorder.isTypeSupported('video/webm')) {
-          options = { mimeType: 'video/webm' }
-        }
-      } catch (e) {
-        console.warn('[REC] MediaRecorder.isTypeSupported check failed, using default', e)
-      }
-
-      let recorder
-      try {
-        recorder = options
-          ? new MediaRecorder(info.stream, options)
-          : new MediaRecorder(info.stream)
-      } catch (e) {
-        console.error('[REC] Failed to create MediaRecorder', e)
-        return
-      }
-
-      const recState = {
-        isRecording: true,
-        startedAt: new Date(),
-        elapsedSeconds: 0,
-        chunks: [],
-        recorder,
-        timerId: null,
-      }
-
-      recorder.ondataavailable = (evt) => {
-        if (evt.data && evt.data.size > 0) {
-          recState.chunks.push(evt.data)
-        }
-      }
-
-      recorder.onerror = (evt) => {
-        console.error('[REC] MediaRecorder error:', evt.error || evt)
-      }
-
-      recorder.onstop = () => {
-        const endedAt = new Date()
-        const startedAt = recState.startedAt
-        const durationSeconds = recState.elapsedSeconds
-
-        if (recState.timerId) {
-          clearInterval(recState.timerId)
-          recState.timerId = null
-        }
-
-        if (!recState.chunks.length) {
-          console.warn('[REC] No data chunks recorded for', cameraId)
-        } else {
-          const mimeType = recorder.mimeType || 'video/webm'
-          const blob = new Blob(recState.chunks, { type: mimeType })
-
-          const baseName = this.makeRecordingBaseName(cameraId, startedAt)
-          this.downloadBlob(blob, `${baseName}.webm`)
-        }
-
-        const meta = {
-          cameraId,
-          startedAt: startedAt.toISOString(),
-          endedAt: endedAt.toISOString(),
-          durationSeconds,
-        }
-        const metaBlob = new Blob([JSON.stringify(meta, null, 2)], {
-          type: 'application/json',
-        })
-        const baseName = this.makeRecordingBaseName(cameraId, startedAt)
-        this.downloadBlob(metaBlob, `${baseName}.json`)
-
-        recState.isRecording = false
-      }
-
-      recState.timerId = setInterval(() => {
-        recState.elapsedSeconds += 1
-      }, 1000)
-
-      this.recordings[cameraId] = recState
-
-      try {
-        recorder.start()
-        console.log('[REC] Started recording for', cameraId, 'mime:', recorder.mimeType)
-      } catch (e) {
-        console.error('[REC] recorder.start failed', e)
-      }
-    },
-
-    stopRecording(cameraId) {
-      const rec = this.recordings[cameraId]
-      if (!rec || !rec.isRecording || !rec.recorder) return
-
-      try {
-        rec.recorder.stop()
-      } catch (e) {
-        console.error('[REC] recorder.stop failed', e)
-      }
-
-      rec.isRecording = false
-      if (rec.timerId) {
-        clearInterval(rec.timerId)
-        rec.timerId = null
-      }
-    },
-
-    makeRecordingBaseName(cameraId, dateObj) {
-      const safeId = cameraId.replace(/[^a-zA-Z0-9_-]/g, '')
-      const iso = dateObj.toISOString().replace(/[:.]/g, '-')
-      return `cam-${safeId}-${iso}`
-    },
-
-    downloadBlob(blob, filename) {
-      if (!blob || !blob.size) {
-        console.warn('[REC] Tried to download empty blob for', filename)
-        return
-      }
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
-    },
-
-    // --- SOCKET / WEBRTC ---
-
+    /* ---- SOCKET / WEBRTC ---- */
     initSocket() {
       const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
       console.log('[ADMIN] Connecting to signaling:', signalingUrl)
@@ -1016,101 +824,60 @@ export default {
         this.socket.emit('join', { role: 'admin' })
       })
 
-      this.socket.on('camera-joined', ({ cameraId, deviceId }) => {
-        console.log('[ADMIN] Camera joined:', cameraId, 'deviceId:', deviceId)
-
-        if (!this.cameras[cameraId]) {
-          let slotIndex = null
-
-          // If we have a stored slot for this deviceId and it's free, reuse it
-          if (deviceId && this.deviceSlotMap[deviceId] != null) {
-            const mapped = this.deviceSlotMap[deviceId]
-            const slot = this.cameraSlots[mapped]
-            if (slot && !slot.cameraId) {
-              slotIndex = mapped
-            }
-          }
-
-          // Otherwise, fallback to first free slot
-          if (slotIndex == null) {
-            slotIndex = this.assignSlotForCamera(cameraId)
-            if (deviceId) {
-              this.deviceSlotMap[deviceId] = slotIndex
-              this.saveDeviceSlotsToStorage()
-            }
-          } else {
-            if (!this.cameraSlots[slotIndex].cameraId) {
-              this.cameraSlots[slotIndex].cameraId = cameraId
-            }
-          }
-
-          this.setSlotState(slotIndex, 'connecting', 'status-connecting')
-
-          this.cameras[cameraId] = {
-            pc: null,
-            stream: null,
-            slotIndex,
-            audioVolume: 1.0,
-            deviceId: deviceId || null,
+      // Recording state from cameras
+      this.socket.on('record-state', ({ cameraId, isRecording, elapsedSeconds }) => {
+        if (!cameraId) return
+        if (!this.recordings[cameraId]) {
+          this.recordings[cameraId] = {
+            isRecording: !!isRecording,
+            elapsedSeconds: elapsedSeconds || 0,
           }
         } else {
-          if (deviceId && !this.cameras[cameraId].deviceId) {
-            this.cameras[cameraId].deviceId = deviceId
-          }
+          this.recordings[cameraId].isRecording = !!isRecording
+          this.recordings[cameraId].elapsedSeconds = elapsedSeconds || 0
         }
+      })
 
+      this.socket.on('camera-joined', ({ cameraId }) => {
+        console.log('[ADMIN] Camera joined:', cameraId)
+        if (!this.cameras[cameraId]) {
+          const slotIndex = this.assignSlotForCamera(cameraId)
+          this.setSlotState(slotIndex, 'connecting', 'status-connecting')
+          this.cameras[cameraId] = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
+        }
         this.updateCameraSummary()
-        this.$nextTick(() => {
-          this.refreshSceneVideoBindings()
-        })
       })
 
       this.socket.on('camera-left', ({ cameraId }) => {
         console.log('[ADMIN] Camera left:', cameraId)
         const info = this.cameras[cameraId]
         if (info) {
+          const slotIndex = info.slotIndex
+
           if (info.pc) {
             try { info.pc.close() } catch (e) {}
           }
-          const thumbVideo = this.getThumbVideo(info.slotIndex)
+
+          const thumbVideo = this.getThumbVideo(slotIndex)
           if (thumbVideo && thumbVideo.srcObject) {
             thumbVideo.srcObject.getTracks().forEach(t => t.stop())
             thumbVideo.srcObject = null
           }
-          this.setSlotState(info.slotIndex, 'offline', 'status-offline')
 
-          // Free the slot so the same device can reuse V1–V5
-          const slot = this.cameraSlots[info.slotIndex]
-          if (slot) {
-            slot.cameraId = null
+          if (typeof slotIndex === 'number' && this.cameraSlots[slotIndex]) {
+            this.cameraSlots[slotIndex].cameraId = null
+            this.setSlotState(slotIndex, 'offline', 'status-offline')
           }
 
-          if (this.currentPreviewId === cameraId) {
-            this.currentPreviewId = null
-            if (this.$refs.previewVideo && !this.activeScene) {
-              this.$refs.previewVideo.srcObject = null
-            }
-            this.previewMeta = 'None selected'
-          }
-          if (this.currentLiveId === cameraId) {
-            this.currentLiveId = null
-            if (this.$refs.liveVideo) {
-              this.$refs.liveVideo.srcObject = null
-            }
-            this.liveMeta = 'None on air'
-          }
-
-          if (this.isRecording(cameraId)) {
-            this.stopRecording(cameraId)
+          // Drop recording state
+          if (this.recordings[cameraId]) {
+            delete this.recordings[cameraId]
           }
 
           this.teardownCameraAudio(cameraId)
           delete this.cameras[cameraId]
           this.updateCameraSummary()
-
-          this.$nextTick(() => {
-            this.refreshSceneVideoBindings()
-          })
+          this.attachSceneVideos()
         }
       })
 
@@ -1121,7 +888,7 @@ export default {
         let info = this.cameras[fromCameraId]
         if (!info) {
           const slotIndex = this.assignSlotForCamera(fromCameraId)
-          info = { pc: null, stream: null, slotIndex, audioVolume: 1.0, deviceId: null }
+          info = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
           this.cameras[fromCameraId] = info
         }
 
@@ -1147,7 +914,7 @@ export default {
         pc.onconnectionstatechange = () => {
           console.log('[ADMIN] PC state for', fromCameraId, '=', pc.connectionState)
           if (pc.connectionState === 'connected') {
-            this.setSlotState(info.slotIndex, 'online', 'status-live')
+            this.setSlotState(info.slotIndex, 'online', 'status-online')
             this.logStatus('Connected to one or more cameras.')
           } else if (
             pc.connectionState === 'disconnected' ||
@@ -1175,22 +942,15 @@ export default {
           const thumbVideo = this.getThumbVideo(info.slotIndex)
           if (thumbVideo && thumbVideo.srcObject !== stream) {
             thumbVideo.srcObject = stream
-            const p = thumbVideo.play()
-            if (p && p.catch) p.catch(() => {})
+            try {
+              thumbVideo.play()
+            } catch (e) {
+              console.warn('[THUMB] play() failed', e)
+            }
           }
 
           this.ensureCameraAudio(fromCameraId, stream)
-
-          if (!this.currentPreviewId) {
-            this.setPreviewCamera(fromCameraId)
-          }
-          if (!this.currentLiveId) {
-            this.setLiveFromPreview()
-          }
-
-          this.$nextTick(() => {
-            this.refreshSceneVideoBindings()
-          })
+          this.attachSceneVideos()
         }
 
         try {
@@ -1260,7 +1020,6 @@ header h1 {
   margin-bottom: 8px;
 }
 
-/* Main layout: 2 columns (Preview | Live) + bottom strip */
 #layout {
   display: grid;
   grid-template-rows: minmax(260px, 1fr) auto auto;
@@ -1299,17 +1058,98 @@ header h1 {
   color: #6b7280;
 }
 
-/* ========== 16:9 WRAPPER USED BY PREVIEW/SCENE + LIVE ========== */
+/* Scenes UI */
+.scene-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.scene-list {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.scene-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: #6b7280;
+}
+
+.scene-btn {
+  border-radius: 999px;
+  border: 1px solid #4b5563;
+  background: #020617;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #e5e7eb;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 70px;
+}
+
+.scene-btn-name {
+  font-weight: 500;
+}
+
+.scene-btn-summary {
+  font-size: 9px;
+  color: #9ca3af;
+  opacity: 0.8;
+}
+
+.scene-btn-active {
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.18);
+}
+.scene-btn-add {
+  border-color: #64748b;
+  color: #cbd5f5;
+}
+
+.scene-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.scene-tools-label {
+  font-size: 10px;
+  color: #6b7280;
+}
+
+.scene-source-btn {
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #020617;
+  color: #e5e7eb;
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.scene-source-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 16:9 wrappers */
 .pane-video-wrapper.aspect-16-9 {
   position: relative;
   width: 100%;
-  padding-top: 56.25%; /* 16:9 */
+  padding-top: 56.25%;
   background: #020617;
   border-radius: 4px;
   overflow: hidden;
 }
-
-/* Any video or scene canvas inside fills the 16:9 box */
 .pane-video-wrapper.aspect-16-9 > video,
 .pane-video-wrapper.aspect-16-9 > .scene-canvas {
   position: absolute;
@@ -1318,7 +1158,6 @@ header h1 {
   height: 100%;
 }
 
-/* Default video style (fallback anywhere else) */
 video {
   width: 100%;
   height: 100%;
@@ -1326,7 +1165,6 @@ video {
   background: #000;
 }
 
-/* Scene canvas inside 16:9 */
 .scene-canvas {
   position: relative;
   width: 100%;
@@ -1334,7 +1172,6 @@ video {
   background: #020617;
 }
 
-/* Scene items */
 .scene-item {
   position: absolute;
   border-radius: 4px;
@@ -1342,17 +1179,14 @@ video {
   box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.5);
   cursor: move;
 }
-
 .scene-item-selected {
   box-shadow: 0 0 0 1px #38bdf8, 0 0 0 2px rgba(56, 189, 248, 0.5);
 }
-
 .scene-item video {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-
 .scene-item-remove {
   position: absolute;
   top: 2px;
@@ -1367,7 +1201,6 @@ video {
   cursor: pointer;
   z-index: 5;
 }
-
 .resize-handle {
   position: absolute;
   width: 10px;
@@ -1418,7 +1251,7 @@ video {
   cursor: default;
 }
 
-/* Bottom strip: audio + camera thumbnails */
+/* Bottom strip */
 #bottom-strip {
   grid-column: 1 / span 2;
   display: grid;
@@ -1447,7 +1280,7 @@ video {
   align-items: center;
 }
 
-/* AUDIO PANEL BODY */
+/* Audio panel */
 #audio-panel-body {
   flex: 1;
   display: flex;
@@ -1455,14 +1288,12 @@ video {
   gap: 8px;
   font-size: 11px;
 }
-
 .audio-disabled {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
 }
-
 .audio-disabled button {
   padding: 4px 10px;
   border-radius: 999px;
@@ -1472,23 +1303,19 @@ video {
   font-size: 11px;
   cursor: pointer;
 }
-
 .audio-hint {
   color: #6b7280;
   font-size: 10px;
 }
-
 .audio-mixer {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-
 .audio-master {
   border-bottom: 1px solid #1f2937;
   padding-bottom: 6px;
 }
-
 .audio-row-label {
   display: flex;
   justify-content: space-between;
@@ -1496,42 +1323,35 @@ video {
   font-size: 11px;
   margin-bottom: 2px;
 }
-
 .audio-value {
   color: #9ca3af;
   font-size: 10px;
 }
-
 .audio-master input[type="range"],
 .audio-source-row input[type="range"] {
   width: 100%;
 }
-
 .audio-sources {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-
 .audio-source-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-
 .audio-no-sources {
   color: #4b5563;
   font-size: 10px;
 }
 
-/* CAMERA SLOTS */
-
+/* Slot statuses */
 .camera-label {
   font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
 }
-
 .camera-status {
   font-size: 10px;
   padding: 1px 6px;
@@ -1548,6 +1368,11 @@ video {
   color: #f97316;
   background: rgba(249, 115, 22, 0.12);
 }
+.status-online {
+  border-color: rgba(34, 197, 94, 0.6);
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.08);
+}
 .status-live {
   border-color: #22c55e;
   color: #22c55e;
@@ -1559,35 +1384,34 @@ video {
   background: rgba(239, 68, 68, 0.15);
 }
 
-/* V1–V5 thumbnails: force 16:9 for sources */
+/* V1–V5 thumbnails */
 .camera-thumb-wrapper {
-  flex: 1;
   position: relative;
+  width: 100%;
+  padding-top: 56.25%;
   background: #020617;
   border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
-
-  aspect-ratio: 16 / 9;
 }
-
+.camera-thumb-wrapper > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .camera-thumb-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
   border: 1px solid transparent;
 }
-.camera-thumb-wrapper.active-preview .camera-thumb-overlay {
-  border-color: #38bdf8;
-}
-.camera-thumb-wrapper.active-live .camera-thumb-overlay {
-  border-color: #22c55e;
-}
 .camera-thumb-wrapper.recording-border .camera-thumb-overlay {
   box-shadow: 0 0 0 1px #ef4444, 0 0 12px rgba(239, 68, 68, 0.6);
 }
 
-/* Recording controls */
+/* Recording UI */
 .camera-rec-row {
   display: flex;
   justify-content: space-between;
@@ -1595,7 +1419,6 @@ video {
   margin-top: 4px;
   font-size: 11px;
 }
-
 .rec-button {
   border-radius: 999px;
   border: 1px solid #ef4444;
@@ -1612,7 +1435,6 @@ video {
   background: #7f1d1d;
   color: #fee2e2;
 }
-
 .rec-dot {
   width: 6px;
   height: 6px;
@@ -1623,7 +1445,6 @@ video {
 .rec-dot-on {
   opacity: 1;
 }
-
 .rec-timer {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 10px;
