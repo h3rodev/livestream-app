@@ -99,55 +99,63 @@ export default {
 
   methods: {
     initSocket() {
-      const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
-      console.log('[CAMERA] Connecting to signaling:', signalingUrl)
+  // Same pattern as Admin: prefer env, fallback to HTTPS on current host
+  const fallbackUrl = `https://${window.location.hostname}:3000`
+  const signalingUrl = import.meta.env.VITE_SIGNALING_URL || fallbackUrl
 
-      this.socket = io(signalingUrl, {
-        transports: ['websocket'],
-      })
+  console.log('[CAMERA] Connecting to signaling:', signalingUrl)
 
-      this.socket.on('connect', () => {
-        this.cameraId = this.socket.id
-        this.status = 'Connected to signaling server'
-        this.socket.emit('join', { role: 'camera' })
-      })
+  this.socket = io(signalingUrl, {
+    transports: ['websocket'],
+  })
 
-      this.socket.on('webrtc-answer', async ({ sdp }) => {
-        if (!this.pc) return
-        try {
-          await this.pc.setRemoteDescription(sdp)
-        } catch (err) {
-          console.error('[CAMERA] Error setting remote description:', err)
-        }
-      })
+  this.socket.on('connect', () => {
+    this.cameraId = this.socket.id
+    this.status = 'Connected to signaling server'
+    this.socket.emit('join', { role: 'camera' })
+  })
 
-      this.socket.on('webrtc-ice-candidate', async (payload) => {
-        if (!this.pc) return
-        const candidate = payload?.candidate || payload
-        if (!candidate) return
-        try {
-          await this.pc.addIceCandidate(new RTCIceCandidate(candidate))
-        } catch (err) {
-          console.error('[CAMERA] Error adding ICE candidate from admin:', err)
-        }
-      })
+  this.socket.on('connect_error', (err) => {
+    console.error('[CAMERA] socket connect_error', err)
+    this.status = 'Signaling connection failed: ' + (err.message || err)
+  })
 
-      // --- Remote record control from Admin ---
-      this.socket.on('record-control', ({ cameraId, action }) => {
-        if (!this.cameraId || cameraId !== this.cameraId) return
-        if (action === 'start') {
-          if (!this.isRecording) this.startRecording()
-        } else if (action === 'stop') {
-          if (this.isRecording) this.stopRecording()
-        }
-      })
+  this.socket.on('webrtc-answer', async ({ sdp }) => {
+    if (!this.pc) return
+    try {
+      await this.pc.setRemoteDescription(sdp)
+    } catch (err) {
+      console.error('[CAMERA] Error setting remote description:', err)
+    }
+  })
 
-      // --- Live state from Admin/Scenes ---
-      this.socket.on('live-state', ({ cameraId, isLive }) => {
-        if (!this.cameraId || cameraId !== this.cameraId) return
-        this.isLive = !!isLive
-      })
-    },
+  this.socket.on('webrtc-ice-candidate', async (payload) => {
+    if (!this.pc) return
+    const candidate = payload?.candidate || payload
+    if (!candidate) return
+    try {
+      await this.pc.addIceCandidate(new RTCIceCandidate(candidate))
+    } catch (err) {
+      console.error('[CAMERA] Error adding ICE candidate from admin:', err)
+    }
+  })
+
+  // --- Remote record control from Admin ---
+  this.socket.on('record-control', ({ cameraId, action }) => {
+    if (!this.cameraId || cameraId !== this.cameraId) return
+    if (action === 'start') {
+      if (!this.isRecording) this.startRecording()
+    } else if (action === 'stop') {
+      if (this.isRecording) this.stopRecording()
+    }
+  })
+
+  // --- Live state from Admin/Scenes ---
+  this.socket.on('live-state', ({ cameraId, isLive }) => {
+    if (!this.cameraId || cameraId !== this.cameraId) return
+    this.isLive = !!isLive
+  })
+},
 
     async startCamera() {
       try {
@@ -408,9 +416,8 @@ export default {
     },
 
     async uploadRecordingToServer(blob, meta, filename) {
-      const proto = window.location.protocol
-      const host = window.location.hostname
-      const port = 3000
+      const uploadBase =
+        import.meta.env.VITE_UPLOAD_BASE || `https://${window.location.hostname}:3000`
 
       const params = new URLSearchParams({
         cameraId: meta.cameraId || '',
@@ -420,8 +427,7 @@ export default {
         filename: filename || 'recording.webm',
       })
 
-      const uploadUrl = `${proto}//${host}:${port}/api/upload-recording?${params.toString()}`
-
+      const uploadUrl = `${uploadBase}/api/upload-recording?${params.toString()}`
       console.log('[UPLOAD] Uploading to', uploadUrl)
 
       const response = await fetch(uploadUrl, {
@@ -441,6 +447,7 @@ export default {
       console.log('[UPLOAD] Server response:', json)
       return json
     },
+
   },
 }
 </script>

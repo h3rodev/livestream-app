@@ -141,6 +141,26 @@
         </button>
       </div>
 
+      <!-- PROGRAM RECORDING BAR -->
+      <div id="program-rec-bar">
+        <div class="program-label">Program Output</div>
+        <button
+          class="rec-button program-rec-button"
+          :class="{ 'rec-on': programRecording.isRecording }"
+          @click="toggleProgramRecording"
+        >
+          <span
+            class="rec-dot"
+            :class="{ 'rec-dot-on': programRecording.isRecording }"
+          ></span>
+          <span v-if="!programRecording.isRecording">REC PROGRAM</span>
+          <span v-else>STOP PROGRAM</span>
+        </button>
+        <span class="rec-timer">
+          {{ programRecordingTimeLabel }}
+        </span>
+      </div>
+
       <!-- Bottom strip: audio + 5 camera slots -->
       <div id="bottom-strip">
         <!-- AUDIO MIXER PANEL -->
@@ -284,6 +304,11 @@ import { io } from 'socket.io-client'
 
 const SCENE_STORAGE_KEY = 'mplapp_scenes_v2'
 
+// Basic Safari detection for MediaRecorder quirks
+const isSafari = /^((?!chrome|android).)*safari/i.test(
+  typeof navigator !== 'undefined' ? navigator.userAgent : '',
+)
+
 export default {
   name: 'App',
 
@@ -299,10 +324,11 @@ export default {
         { label: 'V2', cameraId: null, statusText: 'offline', statusClass: 'status-offline' },
         { label: 'V3', cameraId: null, statusText: 'offline', statusClass: 'status-offline' },
         { label: 'V4', cameraId: null, statusText: 'offline', statusClass: 'status-offline' },
-        { label: 'V5', cameraId: null, statusText: 'offline', statusClass: 'status-offline' }
+        { label: 'V5', cameraId: null, statusText: 'offline', statusClass: 'status-offline' },
       ],
 
-      cameras: {},          // cameraId -> { pc, stream, slotIndex, audioVolume }
+      // cameraId -> { pc, stream, slotIndex, audioVolume, programVideoEl? }
+      cameras: {},
 
       socket: null,
 
@@ -339,6 +365,19 @@ export default {
 
       dragState: null,
       resizeState: null,
+
+      // Program (mixed output) recording
+      programRecording: {
+        isRecording: false,
+        recorder: null,
+        chunks: [],
+        startedAt: null,
+        elapsedSeconds: 0,
+        timerId: null,
+      },
+      programCanvas: null,
+      programCtx: null,
+      programRenderLoopRunning: false,
     }
   },
 
@@ -362,6 +401,15 @@ export default {
       if (!this.audioReady) return 'disabled'
       if (this.audioSources.length === 0) return 'no active audio'
       return 'live'
+    },
+
+    // Program recording timer label
+    programRecordingTimeLabel() {
+      const sec = this.programRecording.elapsedSeconds || 0
+      const h = String(Math.floor(sec / 3600)).padStart(2, '0')
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0')
+      const s = String(sec % 60).padStart(2, '0')
+      return `${h}:${m}:${s}`
     },
 
     activeScene() {
@@ -398,6 +446,8 @@ export default {
   mounted() {
     this.loadScenesFromStorage()
     this.initSocket()
+    this.ensureProgramCanvas()
+    this.startProgramRenderLoop()
   },
 
   methods: {
@@ -810,18 +860,240 @@ export default {
       }
     },
 
+    /* ---- PROGRAM (MIXED OUTPUT) RECORDING ---- */
+
+    ensureProgramCanvas() {
+      if (this.programCanvas && this.programCtx) return
+      const canvas = document.createElement('canvas')
+      // 16:9 base resolution
+      canvas.width = 1280
+      canvas.height = 720
+      const ctx = canvas.getContext('2d')
+      this.programCanvas = canvas
+      this.programCtx = ctx
+
+      // Safari sometimes behaves better if canvas is in the DOM
+      if (typeof document !== 'undefined' && !document.body.contains(canvas)) {
+        canvas.style.position = 'fixed'
+        canvas.style.left = '-9999px'
+        canvas.style.top = '-9999px'
+        canvas.style.width = '1px'
+        canvas.style.height = '1px'
+        canvas.style.pointerEvents = 'none'
+        document.body.appendChild(canvas)
+      }
+    },
+
+    startProgramRenderLoop() {
+      if (this.programRenderLoopRunning) return
+      this.programRenderLoopRunning = true
+
+      const loop = () => {
+        if (!this.programRenderLoopRunning || !this.programCanvas || !this.programCtx) {
+          this.programRenderLoopRunning = false
+          return
+        }
+
+        const canvas = this.programCanvas
+        const ctx = this.programCtx
+
+        // Clear
+        ctx.fillStyle = 'black'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+        const items = this.liveSceneItems
+        if (items && items.length) {
+          items.forEach(item => {
+            const slot = this.cameraSlots[item.slotIndex]
+            if (!slot || !slot.cameraId) return
+
+            // 🔴 Instead of camInfo.programVideoEl, use the actual LIVE video element
+            const ref = this.$refs['liveSceneVideo-' + item.slotIndex]
+            const videoEl = Array.isArray(ref) ? ref[0] : ref
+
+            if (!videoEl || videoEl.readyState < 2) return
+
+            const dx = item.x * canvas.width
+            const dy = item.y * canvas.height
+            const dw = item.width * canvas.width
+            const dh = item.height * canvas.height
+
+            try {
+              ctx.drawImage(videoEl, dx, dy, dw, dh)
+            } catch (e) {
+              // drawImage can throw if video not ready; ignore this frame
+            }
+          })
+        }
+
+        requestAnimationFrame(loop)
+      }
+
+      requestAnimationFrame(loop)
+    },
+
+
+    toggleProgramRecording() {
+      if (this.programRecording.isRecording) {
+        this.stopProgramRecording()
+      } else {
+        this.startProgramRecording()
+      }
+    },
+
+startProgramRecording() {
+  this.ensureProgramCanvas()
+  if (!this.programCanvas) {
+    console.warn('[PROGRAM] No program canvas available')
+    return
+  }
+
+  // Capture from the offscreen canvas (mixed Live scene)
+  const stream = this.programCanvas.captureStream(25)
+  if (!stream) {
+    console.warn('[PROGRAM] captureStream() returned no stream')
+    return
+  }
+
+  let recorder
+  try {
+    // IMPORTANT: no mimeType/options. Let browser choose.
+    recorder = new MediaRecorder(stream)
+  } catch (e) {
+    console.error('[PROGRAM] Failed to create MediaRecorder', e)
+    return
+  }
+
+  console.log('[PROGRAM] MediaRecorder created with mimeType:', recorder.mimeType)
+
+  const startedAt = new Date()
+  this.programRecording.recorder = recorder
+  this.programRecording.chunks = []
+  this.programRecording.startedAt = startedAt
+  this.programRecording.elapsedSeconds = 0
+
+  recorder.ondataavailable = (evt) => {
+    if (evt.data && evt.data.size > 0) {
+      this.programRecording.chunks.push(evt.data)
+    }
+  }
+
+  recorder.onerror = (evt) => {
+    console.error('[PROGRAM] MediaRecorder error:', evt.error || evt)
+  }
+
+  recorder.onstop = () => {
+    const endedAt = new Date()
+    const durationSeconds = this.programRecording.elapsedSeconds
+
+    if (this.programRecording.timerId) {
+      clearInterval(this.programRecording.timerId)
+      this.programRecording.timerId = null
+    }
+
+    if (!this.programRecording.chunks.length) {
+      console.warn('[PROGRAM] No data chunks recorded (mimeType =', recorder.mimeType, ')')
+      // You can also show a visible error in the UI here if you want.
+    } else {
+      const mimeType = recorder.mimeType || 'video/webm'
+      const blob = new Blob(this.programRecording.chunks, { type: mimeType })
+      const baseName = this.makeProgramBaseName(startedAt)
+
+      // Simple extension decision
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm'
+      this.downloadBlob(blob, `${baseName}.${ext}`)
+
+      const meta = {
+        type: 'program',
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+        durationSeconds,
+        mimeType,
+      }
+      const metaBlob = new Blob([JSON.stringify(meta, null, 2)], {
+        type: 'application/json',
+      })
+      this.downloadBlob(metaBlob, `${baseName}.json`)
+    }
+
+    this.programRecording.isRecording = false
+  }
+
+  // Timer
+  this.programRecording.timerId = setInterval(() => {
+    this.programRecording.elapsedSeconds += 1
+  }, 1000)
+
+  try {
+    // Critical for Safari: use a timeslice so ondataavailable fires
+    recorder.start(1000) // every 1s
+    this.programRecording.isRecording = true
+    console.log('[PROGRAM] Started Program recording, mime:', recorder.mimeType)
+  } catch (e) {
+    console.error('[PROGRAM] recorder.start failed', e)
+  }
+},
+
+    stopProgramRecording() {
+      const pr = this.programRecording
+      if (!pr.recorder || !pr.isRecording) return
+
+      try {
+        pr.recorder.stop()
+      } catch (e) {
+        console.error('[PROGRAM] recorder.stop failed', e)
+      }
+
+      pr.isRecording = false
+      if (pr.timerId) {
+        clearInterval(pr.timerId)
+        pr.timerId = null
+      }
+    },
+
+    makeProgramBaseName(dateObj) {
+      const iso = dateObj.toISOString().replace(/[:.]/g, '-')
+      return `program-${iso}`
+    },
+
+    downloadBlob(blob, filename) {
+      if (!blob || !blob.size) {
+        console.warn('[PROGRAM] Tried to download empty blob for', filename)
+        return
+      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    },
+
     /* ---- SOCKET / WEBRTC ---- */
     initSocket() {
-      const signalingUrl = `${window.location.protocol}//${window.location.hostname}:3000`
+       // Always default to HTTPS for signaling (matches your HTTPS server)
+      const fallbackUrl = `https://${window.location.hostname}:3000`
+      const signalingUrl = import.meta.env.VITE_SIGNALING_URL || fallbackUrl
+
       console.log('[ADMIN] Connecting to signaling:', signalingUrl)
 
       this.socket = io(signalingUrl, {
         transports: ['websocket'],
       })
 
+
       this.socket.on('connect', () => {
         this.logStatus('Connected. Joining as admin…')
         this.socket.emit('join', { role: 'admin' })
+      })
+
+
+      // Extra logging so Chrome shows you why it fails
+      this.socket.on('connect_error', (err) => {
+        console.error('[ADMIN] socket connect_error', err)
+        this.logStatus('Signaling connection failed: ' + (err.message || err))
       })
 
       // Recording state from cameras
@@ -843,7 +1115,7 @@ export default {
         if (!this.cameras[cameraId]) {
           const slotIndex = this.assignSlotForCamera(cameraId)
           this.setSlotState(slotIndex, 'connecting', 'status-connecting')
-          this.cameras[cameraId] = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
+          this.cameras[cameraId] = { pc: null, stream: null, slotIndex, audioVolume: 1.0, programVideoEl: null }
         }
         this.updateCameraSummary()
       })
@@ -874,6 +1146,14 @@ export default {
             delete this.recordings[cameraId]
           }
 
+          // Clean program video element
+          if (info.programVideoEl) {
+            try {
+              info.programVideoEl.srcObject = null
+            } catch {}
+            info.programVideoEl = null
+          }
+
           this.teardownCameraAudio(cameraId)
           delete this.cameras[cameraId]
           this.updateCameraSummary()
@@ -888,7 +1168,7 @@ export default {
         let info = this.cameras[fromCameraId]
         if (!info) {
           const slotIndex = this.assignSlotForCamera(fromCameraId)
-          info = { pc: null, stream: null, slotIndex, audioVolume: 1.0 }
+          info = { pc: null, stream: null, slotIndex, audioVolume: 1.0, programVideoEl: null }
           this.cameras[fromCameraId] = info
         }
 
@@ -947,6 +1227,16 @@ export default {
             } catch (e) {
               console.warn('[THUMB] play() failed', e)
             }
+          }
+
+          // Hidden video element used only for Program canvas drawImage (Safari-friendly)
+          if (!info.programVideoEl) {
+            const pv = document.createElement('video')
+            pv.muted = true
+            pv.playsInline = true
+            pv.autoplay = true
+            pv.srcObject = stream
+            info.programVideoEl = pv
           }
 
           this.ensureCameraAudio(fromCameraId, stream)
@@ -1022,7 +1312,7 @@ header h1 {
 
 #layout {
   display: grid;
-  grid-template-rows: minmax(260px, 1fr) auto auto;
+  grid-template-rows: minmax(260px, 1fr) auto auto auto;
   grid-template-columns: 1.1fr 1.9fr;
   gap: 4px;
   height: calc(100vh - 80px);
@@ -1249,6 +1539,29 @@ video {
 #take-button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* PROGRAM REC BAR */
+#program-rec-bar {
+  grid-column: 1 / span 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: -2px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.program-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.program-rec-button {
+  padding: 3px 10px;
 }
 
 /* Bottom strip */
